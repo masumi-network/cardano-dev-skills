@@ -1,0 +1,25 @@
+{
+  "name": "cardano-dev-skills-website",
+  "type": "module",
+  "private": true,
+  "version": "0.1.0",
+  "description": "GitHub Pages site for cardano-dev-skills.",
+  "scripts": {
+    "dev": "node scripts/build-catalogs.mjs && astro dev",
+    "start": "node scripts/build-catalogs.mjs && astro dev",
+    "build": "node scripts/build-catalogs.mjs && astro build",
+    "preview": "astro preview",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "0.29.3",
+    "astro": "4.16.18",
+    "sharp": "0.33.5"
+  },
+  "overrides": {
+    "@astrojs/sitemap": "3.4.2"
+  },
+  "engines": {
+    "node": ">=18.17.1"
+  }
+}

@@ -1,0 +1,39 @@
+---
+title: Cardano dev knowledge, native in your AI coding agent
+description: 48 documentation sources, 15 developer skills, hooks that auto-consult bundled context — for Claude Code, Codex, and any agent that reads Markdown.
+template: splash
+hero:
+  tagline: 48 documentation sources, 15 developer skills, hooks that auto-consult bundled context — for Claude Code, Codex, and any agent that reads Markdown.
+  actions:
+    - text: Get started
+      link: /getting-started/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/easy1staking-com/cardano-dev-skills
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid stagger>
+  <Card title="Skills" icon="open-book">
+    Focused workflow guides for the common Cardano dev tasks — scaffolding,
+    writing validators, building transactions, governance, optimisation,
+    debugging. [Browse skills](/cardano-dev-skills/skills/).
+  </Card>
+  <Card title="Bundled docs" icon="document">
+    48 upstream Cardano projects mirrored locally and auto-refreshed weekly —
+    SDKs, languages, infra, CIPs, ledger specs. [Browse sources](/cardano-dev-skills/sources/).
+  </Card>
+  <Card title="Hooks + context" icon="rocket">
+    Per-project directive, skill auto-matching, and session-level freshness
+    signals — so agents reach for bundled context before training data.
+    [How it works](/cardano-dev-skills/how-it-works/).
+  </Card>
+  <Card title="Open & extensible" icon="setting">
+    Apache-2.0, community-curated, governance-first. Add a source, ship a
+    skill, propose a category. [Contribute](/cardano-dev-skills/contributing/).
+  </Card>
+</CardGrid>

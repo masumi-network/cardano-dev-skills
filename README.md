@@ -4,6 +4,8 @@ Community-curated Cardano developer knowledge — bundled skills, documentation,
 
 Works as a Claude Code plugin, Codex skill set, or standalone reference.
 
+> 📖 **Website:** https://easy1staking-com.github.io/cardano-dev-skills/
+
 ## Why this exists
 
 Training data on Cardano drifts fast. Conway era changed governance, Aiken syntax evolves, SDK APIs ship breaking changes monthly. An AI agent answering *"how do I write a vesting validator in Aiken?"* from training data alone gets it wrong more often than right.
