@@ -1,0 +1,36 @@
+name: Stale or wrong documentation
+description: Report a bundled doc, skill, or reference that is out of date, inaccurate, or misleading.
+title: "[docs] "
+labels: ["documentation"]
+body:
+  - type: input
+    id: location
+    attributes:
+      label: Where in the repo?
+      description: File path or section heading. Examples — `skills/write-validator/SKILL.md`, `docs/sources/aiken/syntax/...`, README "Skills" table.
+      placeholder: skills/build-transaction/SKILL.md
+    validations:
+      required: true
+  - type: textarea
+    id: whats-wrong
+    attributes:
+      label: What's wrong?
+      description: What does the doc say, and what should it say? Be specific.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: How do you know it's wrong?
+      description: Link to upstream docs, a release note, a code example that contradicts the bundled content, or a transcript of an AI agent producing wrong code based on this.
+  - type: dropdown
+    id: severity
+    attributes:
+      label: How bad is it?
+      options:
+        - Minor (cosmetic, outdated wording)
+        - Moderate (wrong but unlikely to cause incorrect code)
+        - Serious (will lead an agent to produce wrong/broken code)
+        - Security (could lead to funds loss or vulnerability)
+    validations:
+      required: true

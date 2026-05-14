@@ -1,78 +1,104 @@
 # Contributing to Cardano Dev Skills
 
-This guide covers the full lifecycle: adding sources, adding skills, refreshing content, and quality standards.
+This guide covers source vetting, adding sources, adding skills, refresh, documentation governance, and quality standards.
 
-## Adding a New Documentation Source
+## Scope: what belongs in this repo
 
-Sources are tracked in `registry/sources.yaml`. To add a new Cardano project:
+This repo teaches **building on Cardano**. It is a generic knowledge base for AI coding agents and developers.
 
-### 1. Edit sources.yaml
+**In scope:**
+- SDKs, frameworks, validator libraries, design patterns, language tooling
+- Infrastructure (nodes, indexers, chain providers)
+- Protocol and standard specs (CIPs, ledger specs)
+- Reference implementations of *patterns* (e.g. multisig oracle contracts as a pattern, not as a product manual)
+- Generic dApp categories: DEX, lending, NFT marketplace, oracle consumer, governance tool
 
-Add an entry with all required fields:
+**Out of scope:**
+- Product docs for specific deployed dApps (SundaeSwap, Minswap, Liqwid, Indigo, JPG Store, etc.). These belong on each project's own site; users who need them can ask their agent to search the web.
+- Closed-source content
+- Marketing material
+
+Borderline rule: if the upstream repo's primary purpose is *"use OUR product"*, it's out. If it's *"here's how X pattern works, here's the reference code"*, it's in.
+
+## Source-vetting policy
+
+Before adding any new entry to `registry/sources.yaml`, verify the upstream repo is actively maintained:
+
+1. **Last commit < 6 months old**
+2. **≥1 release tag OR active issue/PR activity in the last 3 months**
+3. **No archived / deprecated / sunset banner** in README or repo settings
+4. **For forks**, pick the maintained canonical (concrete example: Evolution SDK is the live fork of dead Lucid Evolution — always prefer the live one)
+
+If signals are ambiguous (e.g. low commit frequency but a stable mature library; deprecation notice with unclear successor), flag it in the PR rather than guess.
+
+The same bar applies to the candidate entries at the bottom of `registry/sources.yaml` — don't promote a candidate without re-vetting against this bar.
+
+## Adding a new documentation source
+
+### 1. Verify against the vetting policy above
+
+### 2. Edit `registry/sources.yaml`
 
 ```yaml
 - name: Project Name
   repo: https://github.com/org/repo.git
-  docs_path: docs                    # path within repo containing docs
-  format: markdown                   # markdown, mdx, rst, openapi, aiken, toml
-  category: infrastructure           # infrastructure, smart-contracts, sdk, standards, governance, scaling, testing
+  docs_path: docs                    # path within the repo containing docs
+  format: markdown                   # see "Valid values" below
+  category: infrastructure           # see "Valid values" below
   priority: medium                   # high, medium, low
   description: Short description of the project
-  # Optional fields:
+  # Optional:
   # website: https://project.dev
   # branch: main
   # glob_patterns:
   #   - "**/*.md"
-  #   - "**/*.mdx"
   # format_overrides:
   #   "**/*.yaml": openapi
 ```
 
-### 2. Validate
+**Valid `format` values:** `markdown`, `mdx`, `rst`, `openapi`, `aiken`, `python`, `toml`
+
+**Valid `category` values:** `infrastructure`, `smart-contracts`, `sdk`, `standards`, `governance`, `scaling`, `testing`, `oracles`
+
+If you need a new category or format, propose it in the PR — both are checked by `scripts/validate.py` against an explicit allow-list.
+
+### 3. Validate
 
 ```bash
 python3 scripts/validate.py
 ```
 
-### 3. Open a PR
-
-CI will validate your changes automatically.
-
-### 4. After merge
-
-The MCP server maintainer runs the sync script to regenerate the TypeScript source file:
+### 4. Fetch and verify locally
 
 ```bash
-./scripts/sync-sources.sh ../cardano-unified-mcp-server/src/config/sources.generated.ts
+./scripts/fetch-docs.sh --source "Project Name"
 ```
 
-Then re-runs ingestion in the MCP server:
+Check that files were actually pulled (`docs/sources/<slug>/`) and that the count looks right.
 
-```bash
-cd ../cardano-unified-mcp-server
-npm run ingest -- "Project Name"
-```
+### 5. Open a PR
 
-## Adding a New Skill
+CI runs validation automatically. The weekly refresh workflow picks up the new source on its next Monday run.
 
-Skills are developer workflow guides in `skills/<category>/<skill-name>/SKILL.md`.
+## Adding a new skill
+
+Skills live flat under `skills/<name>/SKILL.md`. No category subdirectories.
 
 ### 1. Scaffold
 
 ```bash
-./scripts/new-skill.sh my-new-skill smart-contracts
+./scripts/new-skill.sh my-new-skill
 ```
 
 This creates:
+
 ```
-skills/smart-contracts/my-new-skill/
-├── SKILL.md          # template to fill in
-└── references/       # add reference docs here
+skills/my-new-skill/
+├── SKILL.md          # template
+└── references/       # deeper content (one level only)
 ```
 
 ### 2. Write the SKILL.md
-
-Follow this structure:
 
 ```yaml
 ---
@@ -105,107 +131,96 @@ Instructions...
 
 ## References
 - See [reference-name](references/file.md) for details
-- See shared/PRINCIPLES.md for safety guidelines
 ```
 
 ### 3. Quality checklist
 
 - [ ] SKILL.md under 500 lines
-- [ ] Name is kebab-case, under 64 characters
-- [ ] Name matches directory name
+- [ ] Name is kebab-case, max 64 chars
+- [ ] `name:` matches directory name
 - [ ] Description includes trigger phrases
-- [ ] Has "When to use" and "When NOT to use" sections
-- [ ] Has a "Workflow" section with clear steps
+- [ ] Has "When to use", "When NOT to use", "Key principles", "Workflow" sections
 - [ ] No MCP dependency (no `search_docs` references)
-- [ ] Deep content in `references/`, not in SKILL.md
-- [ ] References are one level deep (no chaining)
+- [ ] Deep content in `references/`, one level only — no nested subdirectories
+- [ ] No mention of specific deployed dApps; teach categories generically
+- [ ] No mention of grants, treasuries, or governance proposals — the skill must read as a neutral community contribution
 
 ### 4. Validate and submit
 
 ```bash
 python3 scripts/validate.py
+./scripts/update-doc-counts.sh    # refresh counts in README/CLAUDE
 ```
 
-Open a PR. CI validates automatically.
+Open a PR. CI runs validation + count-drift check.
 
-### Categories
+## Documentation governance
 
-| Category | What belongs here |
-|----------|-------------------|
-| `smart-contracts` | Writing, reviewing, optimizing on-chain code |
-| `transaction-building` | Building, designing, debugging transactions |
-| `infrastructure` | Querying chain data, setting up environments |
-| `governance` | CIP-1694, voting, DRep registration |
-| `concepts` | Explaining eUTxO concepts, CIPs |
-| `integration` | Tooling selection, wallet integration |
+Docs (`CLAUDE.md`, `README.md`, `docs/DESIGN.md`, `docs/CONTRIBUTING.md`) must reflect current state. When you change something **observable from outside the repo**, update related docs in the same PR.
 
-## Refreshing Content
+### What to update for each change type
 
-### When to refresh
+| Change | Update these docs |
+|---|---|
+| New skill | README.md skills table; DESIGN.md if it changes the skill graph |
+| New source | Run `scripts/update-doc-counts.sh`; CONTRIBUTING.md only if introducing a new category or format |
+| New schema field | `registry/sources.yaml` header comment; CONTRIBUTING.md valid-values lists; DESIGN.md if architectural |
+| New script in `scripts/` | README.md if user-facing |
+| New hook | README.md "How to set the Cardano context" section; CLAUDE.md repo structure |
+| Removed/renamed file | All docs that reference it — grep first |
 
-- A major SDK release changes APIs (e.g., Mesh SDK v2, Evolution SDK breaking changes)
-- New CIPs are ratified that affect developer workflows
-- New vulnerability patterns are discovered
-- A referenced tool is deprecated or replaced
+Pure internal tweaks (refactor a script, fix a typo in a skill body) don't trigger doc updates.
 
-### How to refresh
+### Auto-derived counts
 
-**Skills:** Edit the relevant SKILL.md and/or reference files. Review the workflow steps — are they still accurate? Do code examples still compile?
+`scripts/update-doc-counts.sh` rewrites sentinels in CLAUDE.md and README.md from disk state. Sentinels look like `<!-- COUNT:skills -->14<!-- /COUNT:skills -->`. Run before pushing — CI runs `--check` and fails PRs on drift.
 
-**Sources:** Update `registry/sources.yaml` if repos have moved, renamed, or changed structure. Remove deprecated projects. Add new ones.
+## Refreshing content
 
-**MCP index:** After source changes, re-run ingestion:
+The weekly workflow (`.github/workflows/refresh-docs.yml`) runs every Monday at 06:00 UTC, fetches all sources, and opens a PR labeled `documentation, automated`. Review the diff and merge.
+
+To trigger manually:
 
 ```bash
+gh workflow run refresh-docs.yml
+```
+
+To refresh locally:
+
+```bash
+./scripts/fetch-docs.sh                          # all sources
+./scripts/fetch-docs.sh --source "Source Name"   # one source
+```
+
+### When to refresh out of band
+
+- Major SDK release changes APIs (e.g. Mesh v2, Evolution SDK breaking changes)
+- New CIPs ratified that affect developer workflows
+- New vulnerability patterns discovered
+- A referenced tool is deprecated or replaced — drop the source AND update relevant skills
+
+## How the MCP server consumes this repo
+
+If you also run the companion `cardano-unified-mcp-server`:
+
+```
+sources.yaml  →  sync-sources.sh  →  sources.generated.ts  →  npm run ingest
+```
+
+```bash
+./scripts/sync-sources.sh ../cardano-unified-mcp-server/src/config/sources.generated.ts
 cd ../cardano-unified-mcp-server
-
-# Re-ingest a specific source
-npm run ingest -- "Source Name"
-
-# Re-ingest everything
-npm run ingest
-
-# Re-ingest by priority
-npm run ingest -- --priority=high
+npm run ingest                       # all sources
+npm run ingest -- "Source Name"      # one source
 ```
 
-### Refresh schedule (recommended)
+Sync flow is one-directional: `cardano-dev-skills` is the canonical source; the MCP server is a consumer.
 
-| What | Frequency | How |
-|------|-----------|-----|
-| High-priority sources | Monthly | `npm run ingest -- --priority=high` |
-| All sources | Quarterly | `npm run ingest` |
-| Skills review | Quarterly | Manual review of each SKILL.md |
-| Ecosystem scan | Quarterly | Check for new tools, deprecated tools |
-| Vulnerability patterns | As discovered | Update `vulnerability-checklist.md` |
+## Future automation (tracked, not yet built)
 
-## How the MCP Server Consumes This Repo
+See [DESIGN.md Decision 9](DESIGN.md) for the full roadmap. Highlights:
 
-The MCP server (`cardano-unified-mcp-server`) uses this repo in two ways:
-
-### 1. Source registry → ingestion pipeline
-
-```
-sources.yaml  →  sync-sources.sh  →  sources.ts  →  npm run ingest
-```
-
-The sync script converts YAML to TypeScript. The ingestion pipeline clones repos, chunks docs, generates embeddings, and stores them in SQLite.
-
-### 2. Skills → MCP prompts (future)
-
-The MCP server can read SKILL.md files to enhance its prompt responses. A `loader.ts` module reads the SKILL.md content and registers it as MCP prompts, so Cursor and other MCP clients get the same workflows.
-
-### Integration options
-
-1. **Git submodule** — `git submodule add <this-repo> data/skills` in the MCP server
-2. **Clone at build time** — CI clones this repo before building
-3. **File path reference** — point to a local checkout during development
-
-## Future Automation
-
-These are tracked as potential improvements, not current requirements:
-
-- **Release watcher:** GitHub Action that checks if source repos have new releases weekly, opens an issue if so
-- **Scheduled agent:** Claude Code agent that audits skill accuracy against latest docs on a schedule
-- **Auto-sync:** MCP server pulls `sources.yaml` from the published repo on startup
-- **Community dashboard:** GitHub Pages site showing source health, last-indexed dates, contribution stats
+- `UserPromptSubmit` auto-consultation hook + local usage telemetry
+- PR-time source-build check (validates new entries actually clone + match files)
+- AI-powered governance review on PRs (advisory comments, not blocking)
+- GitHub Pages site with auto-generated catalogs

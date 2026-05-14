@@ -1,8 +1,27 @@
 # Cardano Documentation Source Registry
 #
 # This is the canonical list of Cardano projects and their documentation.
-# The MCP server consumes this file to clone, chunk, and index docs.
-# Community contributions welcome - see docs/CONTRIBUTING.md.
+# Community contributions welcome — see docs/CONTRIBUTING.md for the full policy.
+#
+# =============================================================================
+# WHAT BELONGS HERE (read before adding an entry)
+# =============================================================================
+#
+# IN SCOPE: SDKs, frameworks, validator libraries, design patterns, language
+#           tooling, infrastructure, protocol/standard specs, reference
+#           implementations of patterns.
+#
+# OUT OF SCOPE: product docs for specific deployed dApps (SundaeSwap, Minswap,
+#               Liqwid, Indigo, JPG Store, etc.). Borderline rule — if the
+#               repo's primary purpose is "use OUR product", it's out. If it's
+#               "here's how X pattern works, here's the reference code", it's in.
+#
+# SOURCE-VETTING BAR (all must hold):
+#   1. Last commit < 6 months old
+#   2. >=1 release tag OR active issue/PR activity in the last 3 months
+#   3. No archived / deprecated / sunset banner
+#   4. For forks: pick the maintained canonical (e.g. Evolution SDK, not the
+#      dead Lucid Evolution).
 #
 # Schema:
 #   name: Human-readable project name

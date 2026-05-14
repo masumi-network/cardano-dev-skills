@@ -1,0 +1,47 @@
+name: How is this working for you?
+description: General feedback — share your experience using the plugin in real work.
+title: "[feedback] "
+labels: ["feedback"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        We want to know how this plugin works in practice. No structure required — share whatever's useful. Quick prompts below if helpful.
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Which AI agent are you using?
+      options:
+        - Claude Code
+        - Codex
+        - Cursor
+        - Other (mention in details)
+        - Multiple
+    validations:
+      required: true
+  - type: dropdown
+    id: experience
+    attributes:
+      label: Overall, how is it?
+      options:
+        - Very useful — saves real time
+        - Useful sometimes
+        - Mixed — works but I have to nudge a lot
+        - Not really helping yet
+    validations:
+      required: true
+  - type: textarea
+    id: worked
+    attributes:
+      label: What worked well
+      description: Which skills got used, which prompts auto-routed nicely, where the bundled docs saved you from training-data hallucinations.
+  - type: textarea
+    id: didnt
+    attributes:
+      label: What didn't work
+      description: Prompts that should have hit a skill but didn't. Docs the agent ignored. Skills that produced wrong/confusing output. Anything missing.
+  - type: textarea
+    id: suggestions
+    attributes:
+      label: What would help most
+      description: Top 1-3 things you wish were different.

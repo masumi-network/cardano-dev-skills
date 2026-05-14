@@ -1,0 +1,65 @@
+name: Suggest a new documentation source
+description: Propose a new Cardano project to add to `registry/sources.yaml`.
+title: "[source] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before opening this issue, please check the source-vetting policy in [docs/CONTRIBUTING.md](../blob/main/docs/CONTRIBUTING.md#source-vetting-policy). Sources that don't pass the maintenance bar (active, not archived, has releases or recent activity) will be declined.
+  - type: input
+    id: name
+    attributes:
+      label: Project name
+      placeholder: My Awesome Cardano Library
+    validations:
+      required: true
+  - type: input
+    id: repo
+    attributes:
+      label: Repository URL
+      placeholder: https://github.com/org/repo
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What it does
+      description: One-paragraph description — what category of tool, what problem it solves, who uses it.
+    validations:
+      required: true
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      options:
+        - infrastructure
+        - smart-contracts
+        - sdk
+        - standards
+        - governance
+        - scaling
+        - testing
+        - oracles
+        - I'm not sure / a new category is needed
+    validations:
+      required: true
+  - type: checkboxes
+    id: vetting
+    attributes:
+      label: Maintenance bar (all must be true)
+      description: From the source-vetting policy.
+      options:
+        - label: Last commit is less than 6 months old
+          required: true
+        - label: At least 1 release tag OR active issue/PR activity in the last 3 months
+          required: true
+        - label: No archived / deprecated / sunset banner
+          required: true
+        - label: This is NOT a branded dApp product (e.g. SundaeSwap, Minswap, Liqwid). Generic primitives and libraries only.
+          required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: For forks — which one is the maintained canonical and why? Anything ambiguous worth flagging?

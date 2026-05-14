@@ -1,113 +1,145 @@
 # Cardano Dev Skills
 
-Community-curated knowledge base for building on Cardano. Works as a Claude Code plugin, Codex skill set, or standalone reference.
+Community-curated Cardano developer knowledge — bundled skills, documentation, and tooling for AI coding agents.
 
-## What's Inside
+Works as a Claude Code plugin, Codex skill set, or standalone reference.
 
-**13 developer skills** organized by workflow:
+## Why this exists
 
-| Category | Skills |
-|----------|--------|
-| Smart Contracts | `review-contract`, `write-validator`, `optimize-validator` |
-| Transaction Building | `build-transaction`, `design-token`, `debug-transaction` |
-| Infrastructure | `query-chain`, `setup-devnet` |
-| Governance | `governance-guide` |
-| Concepts | `explain-eutxo`, `explain-cip` |
-| Integration | `suggest-tooling`, `connect-wallet` |
+Training data on Cardano drifts fast. Conway era changed governance, Aiken syntax evolves, SDK APIs ship breaking changes monthly. An AI agent answering *"how do I write a vesting validator in Aiken?"* from training data alone gets it wrong more often than right.
 
-**40+ documentation sources** — 2,684 files (23MB) of extracted documentation from Cardano projects, bundled in `docs/sources/` and auto-refreshed weekly via GitHub Actions.
+This plugin solves that by shipping:
 
-## Installation
+- **Authoritative bundled docs** from <!-- COUNT:sources -->48<!-- /COUNT:sources --> active Cardano projects (auto-refreshed weekly from upstream).
+- **Behavioral skills** that encode common workflows: scaffolding, writing validators, building transactions, governance, optimization, debugging.
+- **Hooks that auto-consult bundled context** before the agent reaches for training data or the web.
 
-### Claude Code (plugin)
+End result: the agent answers from current, project-authoritative sources instead of memorized snapshots.
 
-```bash
-claude plugin add /path/to/cardano-dev-skills
+## What's inside
+
+- **<!-- COUNT:skills -->14<!-- /COUNT:skills --> developer skills** — each a focused workflow
+- **<!-- COUNT:sources -->48<!-- /COUNT:sources --> documentation sources** — bundled locally under `docs/sources/`, auto-refreshed weekly via GitHub Actions
+- **Hooks** — `SessionStart` reports doc freshness; a `UserPromptSubmit` auto-consultation hook is in development
+
+### Skills
+
+| Skill | What it does |
+|---|---|
+| `scaffold-project` | Bootstrap a new Cardano project across Aiken + 4 off-chain stacks |
+| `write-validator` | Guide writing a validator from spec (default Aiken) |
+| `review-contract` | Security review of a validator |
+| `optimize-validator` | Lower CPU / memory / script-size costs |
+| `build-transaction` | Build & submit transactions across SDKs |
+| `design-token` | Design native tokens, NFTs, CIP-25/68/113 metadata |
+| `debug-transaction` | Diagnose failing transactions |
+| `query-chain` | Pick the right query strategy (Blockfrost / Ogmios / indexer) |
+| `setup-devnet` | Local devnet with Yaci DevKit or testnet setup |
+| `connect-wallet` | CIP-30 wallet integration for dApps |
+| `governance-guide` | CIP-1694 governance, DRep, voting, treasury |
+| `explain-eutxo` | Cardano's UTxO model for newcomers |
+| `explain-cip` | Walk through a specific CIP |
+| `suggest-tooling` | Recommend an SDK / framework given the use case |
+
+## What we add (and don't)
+
+**In scope:** generic developer building blocks — SDKs, frameworks, validator libraries, design patterns, language tooling, infrastructure, protocol/standard specs, reference implementations of patterns.
+
+**Out of scope:** product docs for specific deployed dApps (SundaeSwap, Minswap, Liqwid, Indigo, JPG Store, etc.). This repo teaches **how to build** a DEX, a lending protocol, an NFT marketplace — not how a particular branded product works. If users want product-specific integration help, their agent can search externally.
+
+Borderline rule: if the upstream repo's primary purpose is *"use OUR product"*, it's out. If it's *"here's how X pattern works, here's the reference code"*, it's in.
+
+See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md#scope-what-belongs-in-this-repo) for the full policy and the maintenance bar for source vetting.
+
+## Install
+
+### Claude Code (recommended)
+
+In any Claude Code session:
+
+```
+/plugin marketplace add easy1staking-com/cardano-dev-skills
+/plugin install cardano-dev-skills@cardano-dev-skills
 ```
 
-Or add via marketplace (when published):
+Installed once, active in every Claude Code session in any directory. Verify with `/plugin list`.
 
-```bash
-claude plugin marketplace add easy1staking-com/cardano-dev-skills
-```
-
-### Claude Code (project-level)
-
-Clone into your project and skills are auto-discovered via the `.claude/skills` symlink:
+### Codex / other agents
 
 ```bash
 git clone https://github.com/easy1staking-com/cardano-dev-skills.git
-cd your-cardano-project
-ln -s ../cardano-dev-skills/skills .claude/skills
-```
-
-### Codex
-
-Skills are auto-discovered via the `.agents/skills` symlink:
-
-```bash
-git clone https://github.com/easy1staking-com/cardano-dev-skills.git
+cd your-project
+ln -s ../cardano-dev-skills/skills .agents/skills
 ```
 
 ### Standalone
 
-Just read the `skills/` directory — it's all Markdown.
+Skills are pure Markdown — read `skills/*/SKILL.md` directly or with `grep`.
 
-## Usage
+## How to set the Cardano context
 
-Once installed, skills activate automatically based on your requests:
+The plugin makes this automatic. Here's what happens in a Claude Code session:
 
-- "Review my Aiken validator for vulnerabilities" → `review-contract`
-- "Help me build a minting transaction with Mesh SDK" → `build-transaction`
-- "Explain how datums work in Cardano" → `explain-eutxo`
-- "What tools should I use for an NFT marketplace?" → `suggest-tooling`
-- "Set up a local Cardano devnet" → `setup-devnet`
+1. **Session start.** A `SessionStart` hook reports doc freshness — you'll see `[Cardano Dev Skills] Docs loaded: 48 sources, ...` at the top of every session in any directory.
+2. **Skill matching.** When you ask a question that matches a skill's trigger phrases (e.g. *"review my validator"*, *"scaffold a Cardano project"*), the agent auto-invokes that skill.
+3. **Doc consultation** *(in development).* A `UserPromptSubmit` hook scans your prompt for Cardano-specific keywords (`aiken`, `plutus`, `cip-XXXX`, `ogmios`, `drep`, …) and reminds the agent to consult bundled docs before training data or the web.
 
-## Bundled Documentation
+### When auto-consultation misses
 
-This repo includes **2,684 documentation files** (23MB) extracted from all 42 sources in `docs/sources/`. No external MCP server needed - Claude reads these files directly using `Read` and `Grep`.
+Vague prompts like *"help me build a Cardano dApp"* may not match any specific skill's triggers. In those cases, nudge explicitly:
 
-Documentation is auto-refreshed weekly via GitHub Actions. To manually refresh:
+- *"Check the cardano-dev-skills docs and skills before answering."*
+- *"Use the scaffold-project skill to set up a new project."*
+- *"Read `docs/sources/aiken/` before writing this validator."*
+
+We're tracking which prompts fail to auto-consult so the keyword set + skill triggers can be tuned over time (observability layer in development).
+
+## Bundled documentation
+
+<!-- COUNT:sources -->48<!-- /COUNT:sources --> Cardano projects mirrored locally. Auto-refreshed every Monday at 06:00 UTC via GitHub Actions — the workflow opens a PR; maintainers review and merge.
+
+Manual refresh:
 
 ```bash
-./scripts/fetch-docs.sh
+./scripts/fetch-docs.sh                          # all sources
+./scripts/fetch-docs.sh --source "Source Name"   # one source
 ```
 
-A `SessionStart` hook automatically checks doc freshness and notifies you if they're stale.
+The fetch script writes a `.manifest.yaml` derived from disk state — so partial and full fetches both leave it accurate.
 
 ## Contributing
 
 See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for:
 
-- How to add a new documentation source
-- How to add a new skill
-- How to refresh content
-- Quality standards
+- Source-vetting policy (maintenance bar, what's in scope, what isn't)
+- How to add a skill (format, quality bar, no-branded-dApps rule)
+- Documentation governance (when to update what)
 
-Quick start:
+Quick validation:
 
 ```bash
-# Add a new skill
-./scripts/new-skill.sh my-skill-name category
-
-# Validate everything
-python3 scripts/validate.py
-
-# Sync sources to MCP server
-./scripts/sync-sources.sh path/to/mcp-server/src/config/sources.generated.ts
+python3 scripts/validate.py        # schema + format checks
+./scripts/update-doc-counts.sh     # refresh count placeholders in docs (CI runs --check)
 ```
+
+## Feedback
+
+We want to know how this works in practice — which skills get used, which prompts miss, which docs are stale, what's missing.
+
+File an issue using the templates at [.github/ISSUE_TEMPLATE/](.github/ISSUE_TEMPLATE/), or open a freeform issue / discussion.
 
 ## Architecture
 
-See [docs/DESIGN.md](docs/DESIGN.md) for all architectural decisions.
+See [docs/DESIGN.md](docs/DESIGN.md) for decisions and rationale.
 
 ```
-cardano-dev-skills/              ← this repo (self-contained)
-├── registry/sources.yaml        ← what Cardano projects exist
-├── skills/                      ← how to build on Cardano (13 skills)
-├── docs/sources/                ← extracted docs from 42 sources (23MB)
-├── hooks/                       ← SessionStart freshness check
-└── scripts/                     ← fetch, validate, sync tooling
+cardano-dev-skills/
+├── registry/sources.yaml        ← canonical source list
+├── skills/                      ← developer skills (flat layout)
+├── docs/sources/                ← extracted upstream docs (auto-refreshed)
+├── hooks/                       ← session and prompt hooks
+├── scripts/                     ← fetch, validate, update-counts
+└── .github/                     ← workflows, issue templates
 ```
 
 ## License

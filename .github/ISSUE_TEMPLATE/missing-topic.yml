@@ -1,0 +1,35 @@
+name: Missing topic or skill
+description: Suggest a new skill, workflow, or topic the repo should cover.
+title: "[topic] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What's missing?
+      description: What topic, workflow, or skill would you want to see covered?
+    validations:
+      required: true
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Concrete use case
+      description: Describe a real prompt you'd ask an AI coding agent that this would unlock. Example — "Show me how to mint a CIP-68 NFT with a reference token using Aiken + Evolution SDK."
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Is this best as…
+      options:
+        - A new skill (`skills/<name>/SKILL.md`)
+        - A new section inside an existing skill
+        - A new bundled doc source
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: references
+    attributes:
+      label: Reference material you've found
+      description: Links to upstream docs, blog posts, example repos that would inform the content.
