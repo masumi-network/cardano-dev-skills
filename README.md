@@ -18,7 +18,7 @@ End result: the agent answers from current, project-authoritative sources instea
 
 ## What's inside
 
-- **<!-- COUNT:skills -->14<!-- /COUNT:skills --> developer skills** — each a focused workflow
+- **<!-- COUNT:skills -->15<!-- /COUNT:skills --> developer skills** — each a focused workflow
 - **<!-- COUNT:sources -->48<!-- /COUNT:sources --> documentation sources** — bundled locally under `docs/sources/`, auto-refreshed weekly via GitHub Actions
 - **Hooks** — `SessionStart` reports doc freshness; a `UserPromptSubmit` auto-consultation hook is in development
 
