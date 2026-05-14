@@ -48,9 +48,10 @@ Take a developer from "I want to build a Cardano dApp" to a working project skel
 6. **Default to a testnet, always.** Devnet (Yaci DevKit) or a public testnet (preview, preprod) is the right starting point for every new project. Scaffolded code is for learning and testing. Never deploy "hello world" validators to mainnet — bugs in untested validators can lock user funds permanently. Switch to mainnet only after thorough testing and, for anything non-trivial, an audit.
 7. **Devnet from day one.** Wire Yaci DevKit into the scaffold from the start. Local feedback loops shorten iteration time and catch integration mistakes early.
 8. **Pin versions; never commit secrets.** Every manifest pins exact toolchain versions. Every project has `.env.example` (committed) and `.env` (ignored). Provider API keys live in env vars.
-9. **Reproducible builds.** A fresh clone plus the documented install command should produce identical artifacts. No global toolchain assumptions; document required versions explicitly.
-10. **Default to monorepo for full-stack; single-repo for solo or library work.** The monorepo splits `onchain/` and `offchain/` (and optionally `frontend/`) into sibling directories with a shared `plutus.json` reference path.
-11. **No hardcoded version numbers in this skill.** Versions move. Direct the developer to the source's GitHub releases or to the bundled docs at `${CLAUDE_SKILL_DIR}/../../docs/sources/<source>/` and have them pin the latest stable at scaffold time.
+9. **Reproducible builds.** A fresh clone plus the documented install command should produce identical artifacts. No carets (`^`), no tildes (`~`), no `latest` — exact versions only. Commit lockfiles.
+10. **Two-tier pinning policy.** *Aiken-side deps* (compiler, stdlib, vodka, design-patterns) are slow-moving and safe to pin in this skill's templates — the layout files list current pinned values. *Off-chain deps* (Evolution/Mesh/PyCardano/cclib SDKs, Next.js, tooling) move fast and ship frequent fixes — for each, run `npm view <pkg> version` (or `pip index versions <pkg>` / equivalent) at scaffold time and embed the exact returned value. The skill's layout files show current-at-time-of-writing values as defaults, but the agent must re-check.
+11. **Default to monorepo for full-stack; single-repo for solo or library work.** The monorepo splits `onchain/` and `offchain/` (and optionally `frontend/`) into sibling directories with a shared `plutus.json` reference path.
+12. **A scaffold isn't done until it builds.** The final step of scaffolding is verifying `aiken check && aiken build` produces `plutus.json` and `npm install && npm run typecheck && npm run build` (or the language equivalent) completes with zero errors. If the developer says "just scaffold it" without verification, still run the build commands and report the result — silent broken scaffolds waste hours downstream.
 
 ## Workflow
 
@@ -165,7 +166,10 @@ Read `references/config-templates.md` and emit the templates relevant to the cho
 
 Each emitted file preserves inline annotations (`#` or `//` comments) explaining each field. The annotations are part of the deliverable; they tell the developer what each line does so they can adapt it.
 
-Versions: do not paste specific version numbers. In each manifest, leave a comment marker like `# PIN: latest stable Aiken release` and tell the developer to check the project's GitHub releases or the bundled docs at `${CLAUDE_SKILL_DIR}/../../docs/sources/aiken/` (or the equivalent source slug) before committing.
+Versions follow the two-tier pinning policy (Key principle 10):
+
+- **Aiken-side (`aiken.toml`):** paste the pinned values from the layout file directly. They are current and update with each skill revision. `aiken new` writes most of these for you.
+- **Off-chain (`package.json`, `pyproject.toml`, `pom.xml`):** before writing the manifest, run `npm view <pkg> version` (or `pip index versions <pkg>`, or look up Maven Central for cclib) for each direct dep, and embed the exact returned value. The layout file shows defaults that are current-at-time-of-writing; refresh them. Do not write `^X.Y.Z` or version placeholders.
 
 ### Step 8: Wire up the local devnet
 
@@ -189,6 +193,32 @@ End the scaffold with the starter on-chain and off-chain code for the use case p
 2. **First transaction.** A minimal off-chain script in the chosen SDK that: loads the `plutus.json` blueprint, builds a transaction that exercises the validator (lock for vesting/escrow/HTLC; transfer for simple-transfer; etc.), signs it with the dev key, submits it, and prints the resulting tx hash. The exact code lives in the stack's layout reference and (for vesting) in `references/vesting-walkthrough.md`. After printing, hand off to `build-transaction` for richer transaction logic.
 
 If the developer enabled a frontend in Step 4, also note: "For the wallet-connect path see `connect-wallet`."
+
+### Step 10: Verify the scaffold builds
+
+Do not call the scaffold done until the project actually builds. This step exists because broken scaffolds eat hours downstream.
+
+Run, in order:
+
+```bash
+cd onchain
+aiken check                   # compiles AND runs unit tests; both must pass
+aiken build                   # produces plutus.json
+
+cd ../offchain
+npm install                   # or pip install -e .  / mvn install — stack-dependent
+npm run typecheck             # or mypy / mvn compile
+npm run build                 # or python -m build / mvn package
+```
+
+A working scaffold reaches the end with zero errors. If anything fails:
+
+1. **Aiken side fails (`aiken check`):** verify `aiken.toml` lists the right dependency pins (compare against the stack's layout reference). Check that `validators/*.ak` imports resolve — most common cause is missing the `sidan-lab/vodka` dep when copying a CF use-case validator.
+2. **`npm install` fails on `EEXISTS`/peer-deps:** the version pinned in the layout reference is stale. Re-run `npm view <pkg> version` and update.
+3. **`npm run typecheck` fails on unknown identifiers:** the off-chain SDK had a breaking change. Search `${CLAUDE_SKILL_DIR}/../../docs/sources/<sdk>/` for the current API signatures and adjust the starter snippet.
+4. **Anything else:** read the error, identify the affected file, edit, re-run. Don't ship a scaffold that didn't build.
+
+Report the final state to the developer plainly: "Scaffold built successfully. Run `npm run <use-case>` to exercise it end-to-end against Yaci DevKit (see `setup-devnet`)." Or, if something is still failing, explain what and why before handing off.
 
 ## On-chain / off-chain bridge
 
