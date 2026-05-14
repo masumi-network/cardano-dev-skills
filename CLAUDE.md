@@ -34,7 +34,7 @@ Use `Read` and `Grep` tools to search these directories for accurate, up-to-date
 - SKILL.md files must be under 500 lines; deep content goes in `references/` (one level deep only)
 - Skill names are kebab-case, max 64 characters; directory name matches `name:` field
 - `registry/sources.yaml` is the single source of truth for documentation sources
-- Skills are standalone — they must work without the MCP server
+- Skills are self-contained — work with `Read` / `Grep` / `Glob` only, no external service dependencies
 - When referencing documentation, guide the user to search or read rather than pasting specs
 
 ## Skill Format
@@ -66,11 +66,15 @@ Docs must reflect current state. When you change something **observable from out
 
 | Change | Update these docs |
 |---|---|
-| New skill (`skills/<name>/SKILL.md`) | README.md skills table; DESIGN.md if it changes the skill graph |
-| New source in `registry/sources.yaml` | Run `scripts/update-doc-counts.sh` (counts auto-update); CONTRIBUTING.md only if introducing a new category or format |
+| New skill (`skills/<name>/SKILL.md`) | README.md skills table; DESIGN.md if it changes the skill graph. Pages site skills catalog auto-regenerates on build. |
+| New source in `registry/sources.yaml` | Run `scripts/update-doc-counts.sh` (counts auto-update); CONTRIBUTING.md only if introducing a new category or format. Pages site sources catalog auto-regenerates on build. |
 | New schema field (category, format, etc.) | `registry/sources.yaml` header comment; CONTRIBUTING.md valid-values lists; DESIGN.md if it's architectural |
 | New script in `scripts/` | README.md "Contributing" / "Architecture" section if user-facing |
-| New hook in `hooks/` | README.md "How to set the Cardano context" section; CLAUDE.md repo structure |
+| New hook in `hooks/` | README.md "How to set the Cardano context" section; CLAUDE.md repo structure; `website/src/content/docs/how-it-works.md` |
+| Scope / vetting / governance policy change | CLAUDE.md governance section; CONTRIBUTING.md; `website/src/content/docs/contributing/` pages |
+| Vision / "why" change | README.md; `website/src/content/docs/about/why.md` |
+| Install flow change | README.md install section; `website/src/content/docs/getting-started.md` |
+| Roadmap change | Memory `project_skill_roadmap.md`; `website/src/content/docs/about/roadmap.md` |
 | Removed/renamed file or path | All docs that reference it — grep first |
 
 ### Auto-derived counts

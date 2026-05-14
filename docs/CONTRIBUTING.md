@@ -140,7 +140,7 @@ Instructions...
 - [ ] `name:` matches directory name
 - [ ] Description includes trigger phrases
 - [ ] Has "When to use", "When NOT to use", "Key principles", "Workflow" sections
-- [ ] No MCP dependency (no `search_docs` references)
+- [ ] No external service dependencies — works with `Read` / `Grep` / `Glob` only
 - [ ] Deep content in `references/`, one level only — no nested subdirectories
 - [ ] No mention of specific deployed dApps; teach categories generically
 - [ ] No mention of grants, treasuries, or governance proposals — the skill must read as a neutral community contribution
@@ -162,11 +162,15 @@ Docs (`CLAUDE.md`, `README.md`, `docs/DESIGN.md`, `docs/CONTRIBUTING.md`) must r
 
 | Change | Update these docs |
 |---|---|
-| New skill | README.md skills table; DESIGN.md if it changes the skill graph |
-| New source | Run `scripts/update-doc-counts.sh`; CONTRIBUTING.md only if introducing a new category or format |
+| New skill | README.md skills table; DESIGN.md if it changes the skill graph. Pages site skills catalog auto-regenerates on build. |
+| New source | Run `scripts/update-doc-counts.sh`; CONTRIBUTING.md only if introducing a new category or format. Pages site sources catalog auto-regenerates on build. |
 | New schema field | `registry/sources.yaml` header comment; CONTRIBUTING.md valid-values lists; DESIGN.md if architectural |
 | New script in `scripts/` | README.md if user-facing |
-| New hook | README.md "How to set the Cardano context" section; CLAUDE.md repo structure |
+| New hook | README.md "How to set the Cardano context" section; CLAUDE.md repo structure; `website/src/content/docs/how-it-works.md` |
+| Scope / vetting / governance policy change | CLAUDE.md; CONTRIBUTING.md; `website/src/content/docs/contributing/` pages |
+| Vision / "why" change | README.md; `website/src/content/docs/about/why.md` |
+| Install flow change | README.md install section; `website/src/content/docs/getting-started.md` |
+| Roadmap change | `website/src/content/docs/about/roadmap.md` |
 | Removed/renamed file | All docs that reference it — grep first |
 
 Pure internal tweaks (refactor a script, fix a typo in a skill body) don't trigger doc updates.
@@ -198,23 +202,6 @@ To refresh locally:
 - New CIPs ratified that affect developer workflows
 - New vulnerability patterns discovered
 - A referenced tool is deprecated or replaced — drop the source AND update relevant skills
-
-## How the MCP server consumes this repo
-
-If you also run the companion `cardano-unified-mcp-server`:
-
-```
-sources.yaml  →  sync-sources.sh  →  sources.generated.ts  →  npm run ingest
-```
-
-```bash
-./scripts/sync-sources.sh ../cardano-unified-mcp-server/src/config/sources.generated.ts
-cd ../cardano-unified-mcp-server
-npm run ingest                       # all sources
-npm run ingest -- "Source Name"      # one source
-```
-
-Sync flow is one-directional: `cardano-dev-skills` is the canonical source; the MCP server is a consumer.
 
 ## Future automation (tracked, not yet built)
 

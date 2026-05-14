@@ -2,16 +2,16 @@
 
 This document captures the architectural decisions behind `cardano-dev-skills`. It records what was decided, why, and what alternatives were considered.
 
-## Decision 1: Two repos, not one
+## Decision 1: Content-only repository
 
-**Decision:** Keep the knowledge base (`cardano-dev-skills`) and the MCP server (`cardano-unified-mcp-server`) as separate repositories.
+**Decision:** This repository ships content (YAML, Markdown, shell hooks) — no application code, no servers, no runtime dependencies users have to install.
 
 **Why:**
-- **Security.** The knowledge base is pure content (YAML, Markdown). Anyone can fork, audit, and contribute without reviewing server code. Users downloading the skills repo don't execute arbitrary TypeScript.
-- **Different audiences.** Content contributors (Cardano developers) don't need to understand MCP infrastructure. Infrastructure maintainers don't need to curate documentation.
-- **Different cadences.** Skills and sources change with the ecosystem. Server code changes with protocol and tooling updates.
+- **Security.** Pure content is auditable by anyone. Users installing the plugin don't execute arbitrary TypeScript or Python from this repo.
+- **Lower contribution barrier.** A Cardano developer can add a skill or source without learning a build system, a framework, or a deployment pipeline.
+- **Decoupled from any specific consumer.** Multiple agents and tools can read this content: Claude Code (as a plugin), Codex (via symlink), any agent that reads Markdown, or external indexers. The repo doesn't assume which one is using it.
 
-**Alternative considered:** Monorepo with both. Rejected because it couples content contributions to infrastructure reviews and creates a security concern for users who just want the knowledge base.
+**Alternative considered:** Bundling content with an indexing/serving runtime. Rejected because it couples content updates to runtime releases and shrinks the set of tools that can consume the content.
 
 ## Decision 2: Skills organized by developer workflow (flat directory layout)
 
@@ -25,23 +25,18 @@ This document captures the architectural decisions behind `cardano-dev-skills`. 
 
 **Decision:** The canonical source list is `registry/sources.yaml`, not a TypeScript file.
 
-**Why:** Lower contribution barrier. A Cardano developer who wants to add a new project doesn't need to know TypeScript or the MCP server's type system. YAML is universally readable and editable. A sync script generates the TypeScript for the MCP server.
+**Why:** Lower contribution barrier. A Cardano developer who wants to add a new project doesn't need to know TypeScript, Python, or any specific consumer's type system. YAML is universally readable and editable. Any downstream tool that needs typed access can generate types from the YAML on its own side.
 
-**Sync flow:**
-1. Community PRs update `sources.yaml`
-2. CI validates the YAML schema
-3. MCP server maintainer runs `scripts/sync-sources.sh` to regenerate `sources.ts`
+## Decision 4: Skills are self-contained
 
-## Decision 4: Skills are standalone
-
-**Decision:** Skills must work without the MCP server. No skill references `search_docs` or any MCP-specific tool.
+**Decision:** Skills must work using only `Read`, `Grep`, and `Glob`. No external service dependencies, no proprietary tool calls.
 
 **Why:**
-- Users who install just the skills plugin (without the MCP server) should still get useful guidance.
-- Skills that depend on MCP break for Codex users, Cursor users, or anyone without the server running.
-- Skills guide the workflow; the MCP server provides supplementary data. If both are available, the experience is richer but not required.
+- Skills should produce useful guidance regardless of what other tools the user has connected.
+- Skills that depend on a specific MCP server, API, or service break for any user who hasn't installed that specific thing.
+- The bundled corpus under `docs/sources/` is the authoritative reference — `Grep` and `Read` are sufficient to find and consume it.
 
-**How it works:** Skills use `allowed-tools: Read Grep Glob` — Claude searches local documentation, the user's codebase, or its own knowledge. If the MCP server is also connected, Claude can additionally call `search_docs` for deeper lookups, but the skill doesn't require it.
+**How it works:** Every SKILL.md declares `allowed-tools: Read Grep Glob`. The agent searches local documentation, the user's codebase, or its own knowledge. If a user has additional tools or MCP servers connected, the agent can use them on its own initiative, but the skill never depends on it.
 
 ## Decision 5: Progressive disclosure
 
@@ -67,30 +62,20 @@ This document captures the architectural decisions behind `cardano-dev-skills`. 
 - `.agents/skills` → `../skills` (Codex discovery)
 - Plugin installation (`/plugin add`) uses `skills/` directly
 
-## Decision 7: Single source of truth flow
+## Decision 7: One-way flow to any consumer
 
-**Decision:** Content flows one direction: `cardano-dev-skills` → `cardano-unified-mcp-server`.
+**Decision:** This repo is the canonical source. Any downstream tool (an MCP server, a search index, a static-site renderer, etc.) reads from it but never writes back.
 
-```
-cardano-dev-skills/                    WRITES
-  registry/sources.yaml          ──→   MCP sources.ts (via sync script)
-  skills/*/SKILL.md              ──→   MCP prompts (via loader at startup)
+**Why:** Eliminates drift. There is exactly one place to update a source entry or a skill's workflow. Consumers are responsible for their own ingestion / sync — they pull, this repo doesn't push to them. Multiple consumers can co-exist without coupling.
 
-cardano-unified-mcp-server/            READS
-  src/config/sources.ts          ←──   generated from sources.yaml
-  src/tools/prompts.ts           ←──   reads SKILL.md content
-```
+## Decision 8: Skill content is authored, not extracted
 
-**Why:** Eliminates drift. There is exactly one place to update a source entry or a skill's workflow. The MCP server is a consumer, not a peer.
-
-## Decision 8: Content authored from scratch
-
-**Decision:** Skill content is written by humans (or AI-assisted), not extracted from the MCP server's chunked/embedded data.
+**Decision:** Skill content is written by humans (or AI-assisted), not derived from retrieval indices, embeddings, or chunked corpora.
 
 **Why:**
-- MCP chunks are optimized for retrieval, not for teaching. They're fragments, not workflows.
+- Retrieval chunks are optimized for similarity search, not for teaching. They're fragments, not workflows.
 - Skills need behavioral guidance ("when to use X over Y", "check for Z before doing W") that doesn't exist in raw documentation.
-- Freshness: skills are written against current best practices, not against whatever was last indexed.
+- Authored content can encode trade-offs, decision criteria, and "what not to do" — none of which appear in source docs.
 
 ## Decision 9: Lifecycle automation shipped incrementally
 
