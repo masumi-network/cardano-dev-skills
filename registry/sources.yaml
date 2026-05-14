@@ -8,9 +8,9 @@
 #   name: Human-readable project name
 #   repo: GitHub clone URL
 #   docs_path: Path within repo containing documentation
-#   format: Primary format (markdown, mdx, rst, openapi, aiken, toml)
+#   format: Primary format (markdown, mdx, rst, openapi, aiken, python, toml)
 #   format_overrides: Per-glob format overrides (optional)
-#   category: infrastructure | smart-contracts | sdk | standards | governance | scaling | testing
+#   category: infrastructure | smart-contracts | sdk | standards | governance | scaling | testing | oracles
 #   priority: high | medium | low
 #   branch: Git branch to clone (optional, defaults to default branch)
 #   glob_patterns: File patterns to include (optional, defaults to all matching format)
@@ -409,6 +409,18 @@
     - "examples/**/*.md"
   description: Low-level Rust/WASM serialization library by Emurgo
 
+- name: CIP-113 SDK (TypeScript)
+  repo: https://github.com/easy1staking-com/cip113-sdk-ts.git
+  docs_path: "."
+  format: markdown
+  category: sdk
+  priority: medium
+  glob_patterns:
+    - README.md
+    - "docs/**/*.md"
+    - "examples/**/README.md"
+  description: TypeScript SDK for building applications on top of CIP-113 programmable tokens
+
 # --- Testing & DevNets ---
 
 - name: Yaci DevKit
@@ -470,6 +482,48 @@
   glob_patterns:
     - "**/*.md"
   description: Next-gen consensus with Input Endorsers - 30-50x throughput
+
+# --- Oracles ---
+
+- name: Charli3 Pull Oracle Contracts
+  repo: https://github.com/Charli3-Official/charli3-pull-oracle-contracts.git
+  docs_path: "."
+  format: aiken
+  format_overrides:
+    "**/*.md": markdown
+  category: oracles
+  priority: medium
+  glob_patterns:
+    - architecture.md
+    - "validators/**/*.ak"
+    - "lib/**/*.ak"
+  description: Aiken (Plutus V3) contracts for Charli3's pull-based multisig oracle - minting policy, spending validator, IQR consensus, reward logic
+
+- name: Charli3 Pull Oracle SDK
+  repo: https://github.com/Charli3-Official/charli3-pull-oracle-sdk.git
+  docs_path: "."
+  format: python
+  format_overrides:
+    "**/*.md": markdown
+  category: oracles
+  priority: medium
+  glob_patterns:
+    - README.md
+    - "charli3_offchain_core/**/*.py"
+  description: Python off-chain core for Charli3 ODV oracles - deployment, governance, aggregation, chain queries, datum types
+
+- name: Charli3 Pull Oracle Client
+  repo: https://github.com/Charli3-Official/charli3-pull-oracle-client.git
+  docs_path: "."
+  format: python
+  format_overrides:
+    "**/*.md": markdown
+  category: oracles
+  priority: medium
+  glob_patterns:
+    - README.md
+    - "charli3_odv_client/**/*.py"
+  description: Python consumer SDK for Charli3 pull oracle - request feeds, build aggregation transactions, collect multisig signatures
 
 # --- Standards & Portals ---
 

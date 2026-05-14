@@ -16,9 +16,9 @@ NAME_PATTERN = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 VALID_CATEGORIES = {
     "infrastructure", "smart-contracts", "sdk", "standards",
-    "governance", "scaling", "testing",
+    "governance", "scaling", "testing", "oracles",
 }
-VALID_FORMATS = {"markdown", "mdx", "rst", "openapi", "aiken", "toml"}
+VALID_FORMATS = {"markdown", "mdx", "rst", "openapi", "aiken", "python", "toml"}
 VALID_PRIORITIES = {"high", "medium", "low"}
 
 errors: list[str] = []
