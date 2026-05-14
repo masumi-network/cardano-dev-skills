@@ -85,6 +85,29 @@
   priority: medium
   description: Node documentation and operational guides
 
+- name: Cardano CLI
+  repo: https://github.com/IntersectMBO/cardano-cli.git
+  docs_path: "."
+  format: markdown
+  category: infrastructure
+  priority: high
+  glob_patterns:
+    - README.md
+    - "cardano-cli/**/*.md"
+  description: Official command-line tool for interacting with cardano-node — building, signing, submitting transactions, queries, key management
+
+- name: Amaru
+  repo: https://github.com/pragma-org/amaru.git
+  docs_path: "."
+  format: markdown
+  category: infrastructure
+  priority: medium
+  glob_patterns:
+    - README.md
+    - "docs/**/*.md"
+    - "crates/**/README.md"
+  description: Rust implementation of a Cardano node by PRAGMA — alternative to cardano-node, focused on diversification of consensus implementations
+
 - name: DB-Sync
   repo: https://github.com/IntersectMBO/cardano-db-sync.git
   docs_path: doc
@@ -232,6 +255,17 @@
   priority: medium
   description: Original Haskell-based smart contract platform by IOG/Intersect
 
+- name: Helios
+  repo: https://github.com/Hyperion-BT/helios.git
+  docs_path: "."
+  format: markdown
+  category: smart-contracts
+  priority: medium
+  glob_patterns:
+    - README.md
+    - "docs/**/*.md"
+  description: DSL with JS/TS SDK that compiles to UPLC in the browser. Smaller community than Aiken but actively maintained.
+
 - name: OpShin
   repo: https://github.com/opshin/opshin.git
   docs_path: "."
@@ -343,6 +377,23 @@
     - "src/programmable-tokens-onchain-aiken/documentation/**/*.md"
     - src/programmable-tokens-offchain-java/README.md
   description: Reference implementation for programmable token standard
+
+- name: CIP-113 Programmable Tokens Platform
+  repo: https://github.com/cardano-foundation/cip113-programmable-tokens-platform.git
+  docs_path: "."
+  format: aiken
+  format_overrides:
+    "**/*.md": markdown
+  category: smart-contracts
+  priority: medium
+  glob_patterns:
+    - README.md
+    - "docs/substandards/**/*.md"
+    - "src/substandards/**/README.md"
+    - "src/substandards/**/validators/*.ak"
+    - "src/substandards/**/lib/**/*.ak"
+    - src/programmable-tokens-offchain-java/KYC-SUBSTANDARD.md
+  description: Off-chain reference platform for CIP-113 — substandard Aiken validators (KYC, KYC-extended, freeze-and-seize, dummy) and markdown explainers for the KERI / CIP-170 attestation flow. Status R&D.
 
 # --- Off-chain SDKs & Frameworks ---
 
@@ -456,6 +507,31 @@
     - "examples/**/README.md"
   description: TypeScript SDK for building applications on top of CIP-113 programmable tokens
 
+- name: Cardano Connect with Wallet
+  repo: https://github.com/cardano-foundation/cardano-connect-with-wallet.git
+  docs_path: "."
+  format: markdown
+  category: sdk
+  priority: high
+  glob_patterns:
+    - README.md
+    - "docs/**/*.md"
+    - "packages/**/README.md"
+  description: Official Cardano Foundation library + React hooks for CIP-30 wallet integration in web dApps
+
+- name: Cardano Addresses
+  repo: https://github.com/IntersectMBO/cardano-addresses.git
+  docs_path: "."
+  format: markdown
+  category: sdk
+  priority: medium
+  glob_patterns:
+    - README.md
+    - "docs/**/*.md"
+    - core/README.md
+    - command-line/README.md
+  description: Address derivation library — Shelley/Byron/Icarus address formats, key encodings, and CLI for offline key management
+
 # --- Testing & DevNets ---
 
 - name: Yaci DevKit
@@ -469,6 +545,17 @@
     - "**/*.md"
   description: Complete local devnet - instant creation, sub-second blocks
   website: https://devkit.yaci.xyz
+
+- name: Cardano Node Antithesis
+  repo: https://github.com/cardano-foundation/cardano-node-antithesis.git
+  docs_path: "."
+  format: markdown
+  category: testing
+  priority: low
+  glob_patterns:
+    - README.md
+    - "docs/**/*.md"
+  description: Cardano-specific assets for the Antithesis deterministic-simulation testing platform — primarily for node operators and protocol engineers
 
 # --- Governance (Conway Era) ---
 
@@ -609,14 +696,7 @@
 
 # --- Smart Contract Languages (candidates) ---
 
-# - name: Helios
-#   repo: https://github.com/HeliosLang/compiler.git
-#   docs_path: docs
-#   format: markdown
-#   category: smart-contracts
-#   priority: medium
-#   description: DSL with JS/TS SDK, compiles in the browser
-#   status: candidate
+# Helios promoted to active sources on 2026-05-14 — see Hyperion-BT/helios above.
 
 # - name: Marlowe
 #   repo: https://github.com/input-output-hk/marlowe-cardano.git
