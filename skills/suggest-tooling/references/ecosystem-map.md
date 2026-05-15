@@ -21,8 +21,7 @@ Comprehensive map of tools, SDKs, and infrastructure in the Cardano developer ec
 | Name | Status | Adoption | Best For |
 |---|---|---|---|
 | **Mesh SDK** | Production | High | Full-stack dApp dev, beginners, React integration, comprehensive API. |
-| **Evolution SDK** | Production | Medium | IntersectMBO's canonical Lucid-lineage successor. Type-safe, Effect-based composable tx building. Staged-builder API (`Client.make(...).withBlockfrost(...).newTx().payToAddress(...).build()`). Modern DX. |
-| **Lucid Evolution** | Production | High | Anastasia-Labs continuation of Lucid. Separate API from Evolution SDK (`Lucid(...).newTx().pay.ToAddress(...).complete()`). |
+| **Evolution SDK** | Production | High | IntersectMBO's canonical Lucid-lineage successor. Type-safe, Effect-based composable tx building. Staged-builder API (`Client.make(...).withBlockfrost(...).newTx().payToAddress(...).build()`). Modern DX. |
 | **Blaze** | Production | Medium | Modular, lightweight alternative. Multiple provider backends. |
 | **cardano-js-sdk** | Production | Medium | Lace wallet ecosystem, full node interaction, enterprise use. |
 | **Cardano Multiplatform Lib** | Production | Medium | Low-level serialization, cross-platform WASM. |
