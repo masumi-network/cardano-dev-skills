@@ -52,35 +52,52 @@ Optional (declare in the registry entry if implemented):
 **Request:**
 ```json
 {
-  "input_data":[
-    {"key":"dataset","value":"product,sales\nWidget,1000\nGadget,1500"},
-    {"key":"analysisType","value":"descriptive"}
-  ],
-  "identifier_from_purchaser":"buyer-unique-id-123"
+  "identifier_from_purchaser":"a3f8b2c1d4e5f6a7b8c9",
+  "input_data":{
+    "dataset":"product,sales\nWidget,1000\nGadget,1500",
+    "analysisType":"descriptive"
+  }
 }
 ```
+
+`input_data` is a **plain object keyed by field id** (matching `/input_schema`) — not
+an array of `{key,value}` pairs. `identifier_from_purchaser` is a random hex nonce,
+14–26 chars (e.g. `crypto.randomBytes(10).toString('hex')`); the buyer reuses it when
+locking funds, so it must satisfy the payment service's hex/length validation.
 
 **Response (immediate):**
 ```json
 {
-  "job_id":"job-456",
-  "identifier_from_seller":"seller-job-456",
-  "blockchain_identifier":"<id from Payment Service>",
-  "payment_address":"addr1...",
-  "amount_lovelace":10000000,
-  "status":"awaiting_payment"
+  "id":"job-456",
+  "blockchainIdentifier":"<id from Payment Service>",
+  "payByTime":1721480200,
+  "submitResultTime":1721480500,
+  "unlockTime":1721481700,
+  "externalDisputeUnlockTime":1721482700,
+  "agentIdentifier":"<your registered agent id>",
+  "sellerVKey":"<your selling wallet vkey>",
+  "identifierFromPurchaser":"a3f8b2c1d4e5f6a7b8c9",
+  "input_hash":"<sha256 of input_data>"
 }
 ```
+
+The response carries **no payment address or amount** — the buyer does not pay the
+seller directly. The buyer locks funds through their own node's `POST /purchase`,
+forwarding `blockchainIdentifier` plus the timing fields (`payByTime`,
+`submitResultTime`, `unlockTime`, `externalDisputeUnlockTime`) and
+`identifierFromPurchaser` from this response. All field names are camelCase except the snake_case `input_hash` (pip-masumi
+emits it as camelCase `inputHash` for Sokosumi compatibility).
 
 **Flow:**
 ```
 1. Receive request
 2. Validate input_data against /input_schema
-3. Generate job_id
-4. POST $PAYMENT_SERVICE_URL/payment → get blockchainIdentifier
-5. Store {job_id → status:awaiting_payment, blockchain_id}
-6. Return payment details
-7. Background: poll the payment service every ~10s for FundsLocked → run job
+3. Generate a job id
+4. Compute inputHash = sha256("<identifierFromPurchaser>;<canonicalize(input_data)>")
+5. POST $PAYMENT_SERVICE_URL/payment (carrying inputHash) → blockchainIdentifier + timing fields
+6. Store {id → status:awaiting_payment, blockchainIdentifier}
+7. Return the MIP-003 response above (buyer locks funds via THEIR node's POST /purchase)
+8. Background: poll GET $PAYMENT_SERVICE_URL/payment for FundsLocked → run job
 ```
 
 **Errors:**
@@ -89,69 +106,81 @@ Optional (declare in the registry entry if implemented):
 
 ### `GET /status?job_id=...`
 
+The `/status` response does **not** echo an `id` — the caller identifies the job via the
+`job_id` query parameter.
+
 **Responses by status:**
 ```json
 // awaiting_payment
-{"job_id":"...","status":"awaiting_payment","payment_address":"addr1...","amount_lovelace":10000000}
+{"status":"awaiting_payment"}
 
 // running
-{"job_id":"...","status":"running","progress":{"current_step":"...","percentage":45}}
+{"status":"running"}
 
-// completed (includes hashes for buyer validation)
-{
-  "job_id":"...","status":"completed",
-  "output":{ /* your result */ },
-  "input_hash":"<sha256>","output_hash":"<sha256>",
-  "execution_time_seconds":45
-}
+// awaiting_input (human-in-the-loop) — returns the schema to satisfy via /provide_input
+{"status":"awaiting_input",
+ "input_schema":{"input_data":[{"id":"linkedin_url","type":"string","name":"LinkedIn Profile URL"}]}}
+
+// completed
+{"status":"completed","result":"<your result>"}
 
 // failed
-{"job_id":"...","status":"failed","error":"PROCESSING_ERROR","message":"..."}
+{"status":"failed","error":"PROCESSING_ERROR","message":"..."}
 ```
 
-**Status set:** `awaiting_payment | pending | running | completed | failed | refunded`.
+**Status set:** `awaiting_payment | awaiting_input | running | completed | failed`.
 
-These are the MIP-003 statuses reported to **buyers**. Marketplace platforms built on
-the registry may use richer internal status sets — map appropriately.
+These are the MIP-003 statuses reported to **buyers**. `awaiting_input` is the
+human-in-the-loop state — the job pauses until the buyer answers via `/provide_input`.
+Marketplace platforms built on the registry may track richer internal states — map
+appropriately.
 
 Errors: `404 JOB_NOT_FOUND`.
 
 ### `GET /availability`
 
+`type` is **required** and must be `"masumi-agent"` — without it the Payment Service
+does not treat the service as available.
+
 ```json
 // available
-{"status":"available","message":"...","uptime_seconds":86400,
- "current_load":{"active_jobs":5,"queued_jobs":2,"max_capacity":20}}
+{"status":"available","type":"masumi-agent","message":"ready to accept jobs"}
 
 // unavailable
-{"status":"unavailable","message":"under maintenance","estimated_downtime_seconds":1800}
+{"status":"unavailable","type":"masumi-agent","message":"under maintenance"}
 ```
 
 Use cases: load balancing, registry liveness checks, buyer routing.
 
 ### `GET /input_schema`
 
-Returns JSON-Schema for the `/start_job` `input_data` array, **or** the typed array
-variant (`{id, type, name, data}`) used by some registry consumers. Pick one and
-document it.
+Returns the field definitions for the `/start_job` `input_data` object, as a typed
+array (`input_data`) **or** grouped (`input_groups`) — provide one, not both. This is
+the array of field descriptors; the `/start_job` request itself sends a plain object
+keyed by these `id`s.
 
-Plain JSON-Schema example:
 ```json
 {
-  "type":"object",
-  "properties":{
-    "dataset":{"type":"string","maxLength":100000},
-    "analysisType":{"type":"string","enum":["descriptive","predictive","diagnostic"]},
-    "outputFormat":{"type":"string","enum":["json","markdown","csv"],"default":"json"}
-  },
-  "required":["dataset","analysisType"]
+  "input_data":[
+    {"id":"dataset","type":"string","name":"Dataset"},
+    {"id":"analysisType","type":"option","name":"Analysis Type",
+     "data":{"values":["descriptive","predictive","diagnostic"]},
+     "validations":[{"validation":"min","value":"1"},{"validation":"max","value":"1"}]}
+  ]
 }
 ```
 
+Field `type` is one of `string | number | boolean | option | none`. An `option` lists
+its choices under `data.values`. See MIP-003 Attachment 01 for the full validation
+reference.
+
 ### `POST /provide_input` (optional)
 
-Body: `{job_id, input_data:[{key,value},...]}`. Use when a job entered
-`input_required` mid-execution.
+Body: `{job_id, input_schema_hash, input_data:{...}}`, where `input_data` is a plain
+object keyed by field id. Use when a job is `awaiting_input` mid-execution.
+`input_schema_hash` is the SHA256 (64-char lowercase hex) of the canonical JSON of the
+`input_schema` returned by `/status`; the service recomputes it to confirm the client
+is answering the current schema version, returning `400` on a mismatch.
 
 ### `GET /demo` (optional)
 
@@ -168,12 +197,17 @@ on-chain. Submitting the hash is what unlocks payment from the escrow contract.
 
 ### Hashing
 
-- **Input hash** = `sha256("${identifierFromPurchaser};${canonicalize(input_data)}", utf-8)` → hex lowercase.
-- **Output hash** = `sha256("${identifierFromPurchaser};${output_string}", utf-8)` → hex lowercase.
-- **Decision hash** = `inputHash + outputHash` (128 hex chars concatenated).
+Two **separate** single-digest hashes — never concatenated:
 
-Canonicalize per RFC 8785. UTF-8 only, no BOM. The semicolon delimiter prevents
-concatenation ambiguity.
+- **Input hash** = `sha256("${identifierFromPurchaser};${canonicalize(input_data)}", utf-8)` → 64-char lowercase hex. Sent as `inputHash` on `POST /payment` (seller) and `POST /purchase` (buyer).
+- **Output hash** = `sha256("${identifierFromPurchaser};${escaped_output}", utf-8)` → 64-char lowercase hex, where `escaped_output` is the result JSON-escaped (see below). Submitted as `submitResultHash` to unlock payment.
+
+Canonicalize the input JSON per RFC 8785; the output is a plain string, JSON-escaped —
+`JSON.stringify(result).slice(1, -1)` in JS, `json.dumps(result, ensure_ascii=False)[1:-1]`
+in Python (this is exactly what pip-masumi's `create_masumi_output_hash` does) — not
+JSON-canonicalized. Both sides must escape identically or the buyer's hash won't match. UTF-8
+only, no BOM. The semicolon delimiter prevents concatenation ambiguity. The live payment service enforces `submitResultHash` as a
+single 64-char sha256 (`^[0-9a-fA-F]{64}$`) — a 128-char value is rejected with `400`.
 
 ### Submit to the payment service
 
@@ -181,7 +215,7 @@ concatenation ambiguity.
 await axios.post(`${PAY}/payment/submit-result`, {
   network: 'Preprod',
   blockchainIdentifier,
-  submitResultHash: inputHash + outputHash,
+  submitResultHash: outputHash,   // single sha256 of the result, 64 hex chars
 }, { headers: { token: PAY_KEY } });
 ```
 
@@ -191,9 +225,17 @@ Field names are `blockchainIdentifier` and `submitResultHash` — **not**
 ### Buyer-side validation
 
 ```ts
-const myInput  = sha256(`${myId};${canonicalize(myInput)}`);
-const myOutput = sha256(`${myId};${output}`);
-if (myInput !== seller.input_hash || myOutput !== seller.output_hash) requestRefund();
+// You already hold input_hash from the /start_job response — recompute to confirm the
+// seller hashed the same input you sent.
+const myInputHash = sha256(`${myId};${canonicalize(inputData)}`);
+if (myInputHash !== job.input_hash) requestRefund();
+
+// Once /status returns "completed", hash the result and compare it to the on-chain
+// result hash your node reports (GET /purchase → resultHash). The pre-image escapes
+// the result exactly as pip-masumi does: JSON.stringify(result) minus the outer quotes.
+const escapedResult = JSON.stringify(String(result)).slice(1, -1);
+const myOutputHash = sha256(`${myId};${escapedResult}`);
+if (myOutputHash !== purchase.resultHash) requestRefund();
 ```
 
 ---
@@ -219,10 +261,14 @@ INPUT_SCHEMA = {"input_data":[
 ]}
 
 async def process_job(identifier_from_purchaser: str, input_data: dict):
-    return {"result": input_data["text"].upper()}
+    return input_data["text"].upper()   # return a STRING, not a dict — the SDK wraps it
 
 run(process_job, INPUT_SCHEMA)        # → FastAPI on :8080
 ```
+
+`process_job` must return a **string**. The SDK wraps it into the `{id, status, result}`
+response and hashes the same string for `submitResultHash` — returning a dict
+double-wraps the result and produces the wrong output shape for buyers.
 
 What `run()` gives you:
 - All six MIP-003 endpoints
@@ -234,14 +280,13 @@ What `run()` gives you:
 Internal call sequence (handled by the SDK):
 ```
 client POST /start_job
-   → SDK POST $PAYMENT_SERVICE_URL/payment  (singular)
-   → returns blockchainIdentifier + payment_address
-   → client pays on chain
-SDK polls GET $PAYMENT_SERVICE_URL/payment?blockchainIdentifier=...&network=...
-   → state="FundsLocked"
+   → SDK POST $PAYMENT_SERVICE_URL/payment  (singular)  → blockchainIdentifier + timing fields
+   → SDK returns the MIP-003 response; buyer locks funds via THEIR node's POST /purchase
+SDK polls POST $PAYMENT_SERVICE_URL/payment/resolve-blockchain-identifier {network, blockchainIdentifier}
+   → onChainState="FundsLocked"
    → SDK runs your process_job()
-   → SDK hashes input+output → POST /payment/submit-result {network, blockchainIdentifier, submitResultHash}
-client GET /status → "completed" + output + hashes
+   → SDK hashes the result → POST /payment/submit-result {network, blockchainIdentifier, submitResultHash}
+client GET /status → "completed" + result
 ```
 
 Full SDK guide in the `masumi-network/pip-masumi` repository.
@@ -278,44 +323,51 @@ def hash_output(buyer, out):
 @app.post("/start_job")
 def start_job():
     data = request.json
-    inp = {x["key"]: x["value"] for x in data["input_data"]}
-    buyer = data["identifier_from_purchaser"]
+    inp = data["input_data"]                       # plain object keyed by field id
+    buyer = data["identifier_from_purchaser"]      # hex nonce, 14-26 chars
     jid = f"job-{uuid.uuid4()}"
+    ih = hash_input(buyer, inp)
 
-    # 1. Create payment request
+    # 1. Create the payment request on your node (carries the input hash)
     pay = requests.post(f"{PAY}/payment",
         headers={"token": KEY},
         json={"network": NET, "agentIdentifier": os.environ["AGENT_IDENTIFIER"],
-              "inputHash": hash_input(buyer, inp),
+              "inputHash": ih,
               "identifierFromPurchaser": buyer}).json()
+    pd = pay["data"]
 
     jobs[jid] = {"status":"awaiting_payment","input":inp,"buyer":buyer,
-                 "blockchain_id": pay["data"]["blockchainIdentifier"]}
+                 "blockchain_id": pd["blockchainIdentifier"], "ih": ih}
     start_payment_polling(jid)         # background thread polling the payment service
 
+    # 2. Return the MIP-003 shape. The buyer locks funds via THEIR node's
+    #    POST /purchase, forwarding blockchainIdentifier + these timing fields.
     return jsonify({
-        "job_id": jid, "identifier_from_seller": jid,
-        "blockchain_identifier": pay["data"]["blockchainIdentifier"],
-        "payment_address": pay["data"]["payByAddress"],
-        "amount_lovelace": int(pay["data"]["requestedFunds"][0]["amount"]),
-        "status": "awaiting_payment",
+        "id": jid,
+        "blockchainIdentifier": pd["blockchainIdentifier"],
+        "payByTime": pd["payByTime"],
+        "submitResultTime": pd["submitResultTime"],
+        "unlockTime": pd["unlockTime"],
+        "externalDisputeUnlockTime": pd["externalDisputeUnlockTime"],
+        "agentIdentifier": os.environ["AGENT_IDENTIFIER"],
+        "sellerVKey": pd["SmartContractWallet"]["walletVkey"],
+        "identifierFromPurchaser": buyer,
+        "input_hash": ih,
     })
 
 @app.get("/status")
 def status():
     j = jobs.get(request.args.get("job_id"))
     if not j: return jsonify({"error":"JOB_NOT_FOUND"}), 404
-    return jsonify({"job_id":request.args["job_id"], "status":j["status"],
-                    "output":j.get("output"),
-                    "input_hash":j.get("ih"), "output_hash":j.get("oh")})
+    return jsonify({"status": j["status"], "result": j.get("output")})
 
 @app.get("/availability")
-def avail(): return jsonify({"status":"available"})
+def avail(): return jsonify({"status":"available","type":"masumi-agent"})
 
 @app.get("/input_schema")
 def schema(): return jsonify({"input_data":[
     {"id":"dataset","type":"string","name":"Dataset"},
-    {"id":"analysisType","type":"option","name":"Analysis","data":{"options":["descriptive","predictive","diagnostic"]}}
+    {"id":"analysisType","type":"option","name":"Analysis Type","data":{"values":["descriptive","predictive","diagnostic"]}}
 ]})
 
 def process(jid):                       # called after FundsLocked
@@ -323,11 +375,11 @@ def process(jid):                       # called after FundsLocked
     task = Task(description=f"Analyze: {j['input']['dataset']}",
                 agent=analyst, expected_output="Statistical results")
     out = str(Crew(agents=[analyst], tasks=[task]).kickoff())
-    ih = hash_input(j["buyer"], j["input"]); oh = hash_output(j["buyer"], out)
+    oh = hash_output(j["buyer"], out)   # single sha256 of the output
     requests.post(f"{PAY}/payment/submit-result", headers={"token": KEY},
         json={"network": NET, "blockchainIdentifier": j["blockchain_id"],
-              "submitResultHash": ih + oh})
-    j.update(status="completed", output=out, ih=ih, oh=oh)
+              "submitResultHash": oh})
+    j.update(status="completed", output=out, oh=oh)
 ```
 
 ### LangGraph (TypeScript, Express)
@@ -390,7 +442,7 @@ payment node handle payment.
 | `/start_job` returns but payment never confirms | Wrong `network`; wrong `agentIdentifier`; payment service unreachable; Blockfrost key invalid. |
 | Hash validation fails (buyer reports mismatch) | Non-canonical JSON; wrong `identifier_from_purchaser` used; UTF-8/BOM; missing `;` delimiter. |
 | Service marked offline in registry | `/availability` not 200; SSL issue; firewall; DNS — the registry checks periodically. |
-| `submit-result` returns 400 | Field names wrong — must be `network`, `blockchainIdentifier`, `submitResultHash`. |
+| `submit-result` returns 400 | Field names wrong (must be `network`, `blockchainIdentifier`, `submitResultHash`); or `submitResultHash` is not a single 64-char hex sha256. |
 | `submit-result` returns 401 | Wrong `token` header value or wrong environment (Preprod key vs Mainnet). |
 
 ---
@@ -408,7 +460,7 @@ curl http://localhost:8080/input_schema
 # 3. Submit (will create a payment request)
 curl -X POST http://localhost:8080/start_job \
   -H "Content-Type: application/json" \
-  -d '{"input_data":[{"key":"text","value":"hello"}],"identifier_from_purchaser":"test-1"}'
+  -d '{"input_data":{"text":"hello"},"identifier_from_purchaser":"a3f8b2c1d4e5f6"}'
 
 # 4. Poll
 curl "http://localhost:8080/status?job_id=<from above>"

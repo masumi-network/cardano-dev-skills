@@ -23,7 +23,7 @@ an NFT-based on-chain registry.
 
 - Developer wants an AI agent (any framework: CrewAI, AutoGen, LangGraph, custom) to charge for its work
 - Agent-to-agent (A2A) payments — one autonomous service hiring another without a human approving each transaction
-- Trustless escrow between a service and unknown buyers — funds locked in a validator, released on delivery
+- Smart-contract escrow between a service and unknown buyers — funds locked in a Cardano validator, released on delivery, with time-based auto-refunds (contested disputes settled by a Masumi-operated 2/3 admin multisig)
 - Making an agent service discoverable via an on-chain registry entry
 - Verifiable delivery — proving what input produced what output without publishing the data (hash-based decision logging)
 - Implementing or debugging a MIP-003 `start_job` / `status` service API
@@ -32,16 +32,16 @@ an NFT-based on-chain registry.
 
 - Trusted parties only (internal company agents, known partners) — direct API calls and internal billing are simpler
 - Micro-transactions well under ~1 ADA equivalent — per-transaction fees dominate; bundle into larger units instead
-- Sub-second payment confirmation required — L1 settlement takes roughly one block (~20s); use a conventional payment processor
+- Sub-second payment confirmation required — on-chain settlement plus the node's confirmation polling takes tens of seconds to a few minutes, not instant; use a conventional payment processor
 - General Cardano payment or transaction building without an agent-service context (use `build-transaction`)
 - Querying chain data (use `query-chain`) or wallet integration in a dApp frontend (use `connect-wallet`)
 
 ## Key principles
 
 1. **Blockchain must earn its place.** Escrow between mutually-distrusting parties, autonomous A2A payments, and portable on-chain reputation justify the complexity. If none of those apply, a conventional payment API is the better recommendation — say so.
-2. **Everything is self-hosted and permissionless.** The payment service is a node the developer runs (Node.js + PostgreSQL), not a hosted dependency. Wallets are theirs; the protocol only defines the contracts and APIs.
+2. **Self-hosted and permissionless to run.** The payment service is a node the developer runs (Node.js + PostgreSQL), not a hosted dependency. Wallets are theirs; the protocol defines the contracts and APIs. The one centralized element is dispute arbitration — contested escrows are decided by a Masumi-operated 2/3 admin multisig (planned move to community governance) — so the escrow is trust-minimized, not fully trustless.
 3. **The service API and the payment layer are decoupled.** The agent implements MIP-003 (four small HTTP endpoints); the payment node handles chain interaction. Any language or framework that can serve HTTP works.
-4. **Delivery is proven by hashes, not by trust.** sha256 hashes of canonicalized input and output are committed on-chain to unlock payment. Buyers recompute the hashes independently and request a refund on mismatch — get canonicalization exactly right (RFC 8785, UTF-8, semicolon delimiter).
+4. **Delivery is proven by hashes, not by trust.** Both hashes bind the buyer's `identifier_from_purchaser` into an `identifier;<payload>` pre-image (MIP-004). The input hash — sha256 of `identifier;` + the RFC-8785-canonicalized input JSON — is committed on-chain when funds lock; the seller submits a single sha256 of `identifier;` + the (JSON-escaped) output string (`submitResultHash`, 64 hex chars) on-chain to unlock payment. Buyers recompute both independently and request a refund on mismatch — match the seller's pre-image byte-for-byte (UTF-8, no BOM, semicolon delimiter; RFC 8785 canonicalization applies only to the JSON input, not the string output).
 5. **Preprod first, always.** The full flow — payment node, escrow lock, result submission, collection — should pass on the Preprod network with faucet funds before any mainnet key exists.
 6. **Key hygiene is part of the integration.** Node-managed hot wallets hold operating funds only; collection goes to an external (ideally hardware) wallet configured by address, never by mnemonic.
 
@@ -64,7 +64,7 @@ Ask (if not already clear):
 
 ### Step 3: Stand up the payment node (Preprod)
 
-The payment service is cloned and run locally: Node.js ≥ 18, PostgreSQL ≥ 14, a Blockfrost project key for Preprod, and three wallets — purchasing and selling (node-managed mnemonics) plus a collection wallet (external, address only). Setup commands, `.env` shape, and the admin dashboard are in `references/payment-service.md`. Fund the test wallets from the public Cardano testnet faucet before continuing.
+The payment service is cloned and run locally: Node.js ≥ 18, PostgreSQL 15, a Blockfrost project key for Preprod, and three wallets — purchasing and selling (node-managed mnemonics) plus a collection wallet (external, address only). Setup commands, `.env` shape, and the admin dashboard are in `references/payment-service.md`. Fund the test wallets from the public Cardano testnet faucet before continuing.
 
 ### Step 4: Implement the MIP-003 service API (seller)
 
@@ -72,12 +72,12 @@ Four required endpoints on the agent service:
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /start_job` | Validate input, create a payment request, return the escrow address and identifier |
-| `GET /status` | Report job state; on completion include output plus input/output hashes |
+| `POST /start_job` | Validate input, register the payment request, return the `blockchainIdentifier` plus the timing fields the buyer forwards to their purchase call (no address — the buyer pays via their own node) |
+| `GET /status` | Report job state; on completion return the `result` |
 | `GET /availability` | Liveness — the registry checks this periodically |
 | `GET /input_schema` | Machine-readable schema for `start_job` input |
 
-The lifecycle: `start_job` creates a payment request against the payment node, the job runs only after the node observes funds locked on-chain, and completion submits `sha256(input) + sha256(output)` to unlock payment. Exact request/response bodies, status values, and per-framework skeletons (CrewAI, LangGraph, AutoGen) are in `references/mip-003-agentic-service-api.md`. In Python, `pip-masumi`'s `run()` generates all endpoints and the payment lifecycle.
+The lifecycle: `start_job` creates a payment request against the payment node, the job runs only after the node observes funds locked on-chain, and completion submits `submitResultHash` (a single sha256 of the result) on-chain to unlock payment. Exact request/response bodies, status values, and per-framework skeletons (CrewAI, LangGraph, AutoGen) are in `references/mip-003-agentic-service-api.md`. In Python, `pip-masumi`'s `run()` generates all endpoints and the payment lifecycle.
 
 ### Step 5: Test the full escrow round-trip
 

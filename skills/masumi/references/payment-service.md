@@ -13,11 +13,16 @@ MIP-003 service API (what the agent implements) → [mip-003-agentic-service-api
 
 Running a payment node enables:
 - A2A payments (autonomous agent-to-agent)
-- Smart-contract escrow (trustless lock + release)
-- Decision logging (sha256 of input+output committed on-chain)
-- Dispute resolution (time-based unlock + refund)
+- Smart-contract escrow — funds lock in a validator, release on delivery, with
+  time-locked auto-refunds. Contested cases are decided by the Masumi protocol's
+  admin multisig (2/3), so the escrow is trust-minimized, not fully trustless.
+- Decision logging — an `inputHash` (sha256 of `identifier_from_purchaser;` + the
+  canonical input) is committed when funds lock, and a separate result hash
+  (sha256 of `identifier_from_purchaser;` + the output) when the seller submits
+- Dispute + refund (time-based unlock; admin-multisig arbitration for disputes)
 
-It is **not** a centralized service — each developer runs their own node.
+Each developer runs their own node — there is no shared centralized service, but
+dispute arbitration and the protocol fee route through Masumi-operated addresses.
 
 ---
 
@@ -31,10 +36,10 @@ Payment Service (you run this)
 │   ├── /payment, /purchase (escrow flow)
 │   ├── /registry (on-chain agent NFT mint)
 │   ├── /wallet, /payment-source, /webhooks, ...
-├── Background jobs (every ~20s)
-│   ├── Payment detection
-│   ├── Auto-collection
-│   ├── UTXO consolidation
+├── Background jobs (cron; minutes-scale defaults, tunable via env)
+│   ├── Payment detection    CHECK_TX_INTERVAL ~180s
+│   ├── Auto-collection      CHECK_COLLECTION_INTERVAL ~300s
+│   ├── Batch purchases      BATCH_PAYMENT_INTERVAL ~240s
 └── PostgreSQL (payment requests, purchases, wallets, keys)
 ```
 
@@ -44,7 +49,7 @@ Payment Service (you run this)
 
 ### Prerequisites
 - Node.js ≥ 18
-- PostgreSQL ≥ 14
+- PostgreSQL 15
 - A Blockfrost project key for the target network
 
 ### Steps
@@ -52,13 +57,20 @@ Payment Service (you run this)
 git clone https://github.com/masumi-network/masumi-payment-service
 cd masumi-payment-service
 npm install
-npm run db:migrate
-npm run db:generate
+npm run prisma:migrate      # apply the DB schema
+npm run prisma:seed         # seed the admin API key (reads ADMIN_KEY from .env)
+
+# Build the admin dashboard (frontend) before logging in:
+cd frontend && npm install && npm run build && cd ..
 ```
+Seeding is what writes `ADMIN_KEY` into the database — skip it and the admin
+dashboard login will fail. To rotate the key later, set `SEED_ONLY_IF_EMPTY=False`
+and re-run `npm run prisma:seed`.
 
 ### `.env`
 ```env
 NETWORK=Preprod                              # or Mainnet
+ENCRYPTION_KEY=your-32-char-min-secret       # REQUIRED: encrypts wallet secrets in the DB
 BLOCKFROST_API_KEY_PREPROD=preprod...
 BLOCKFROST_API_KEY_MAINNET=mainnet...
 DATABASE_URL=postgresql://user:pass@localhost:5432/masumi?schema=public
@@ -123,7 +135,8 @@ sometimes used plurals — those are wrong; trust the live `/docs`.
 - `GET | POST | PATCH | DELETE /api-key`
 
 **Wallets**
-- `GET | POST | PATCH /wallet`
+- `GET | POST | PATCH /wallet` *(GET is a single wallet by `walletType`+`id`)*
+- `GET /wallet/list` *(list managed wallets)*
 - `GET | POST | PATCH | DELETE /wallet/low-balance`
 - `GET /utxos`, `GET /rpc-api-keys`
 
@@ -190,19 +203,26 @@ read API; the payment node's `/registry` endpoints handle the on-chain mint/burn
   "RequestedFunds":[                    // optional; null for fixed, array for dynamic
     {"unit":"","amount":"10000000"}     // unit="" = ADA/lovelace
   ],
-  "payByTime":"<ISO date-time>",        // optional; when payment must hit the contract
-  "submitResultTime":"<ISO date-time>", // optional; when the seller must submit the hash
-  "identifierFromPurchaser":"buyer-id"  // required
+  "payByTime":"1970-01-20T20:00:26.260Z",        // optional; ISO 8601 date-time on the request
+  "submitResultTime":"1970-01-20T20:00:26.260Z", // optional; when the seller must submit the hash
+  "identifierFromPurchaser":"a1b2c3d4e5f6a7"  // required; hex nonce, 14–26 chars
 }
 ```
 `unit:""` means ADA/lovelace. For a native-asset stablecoin: the full
 policyId+assetName concatenated.
 
+Time fields (`payByTime`, `submitResultTime`, `unlockTime`, `externalDisputeUnlockTime`)
+are ISO 8601 date-time strings on the **`POST /payment` request** (e.g.
+`1970-01-20T20:00:26.260Z`). The live API is internally inconsistent: the
+`GET`/response side and `POST /purchase` echo these back as unix-time strings — forward
+whatever your node returned from `/start_job` rather than reformatting.
+
 ### `GET /payment` — check status
 Query: `network` (required), optional `filterSmartContractAddress`,
 `filterOnChainState`, `searchQuery`, `includeHistory`, plus `cursorId | limit` (1..100).
-On-chain state values: `FundsLocked`, `FundsOrDatumInvalid`, `ResultSubmitted`,
-`RefundRequested`, `Disputed`, `Withdrawn`, `RefundWithdrawn`, `DisputedWithdrawn`.
+`filterOnChainState` enum (10 values): `FundsLocked`, `FundsOrDatumInvalid`,
+`ResultSubmitted`, `RefundRequested`, `Disputed`, `WithdrawAuthorized`,
+`RefundAuthorized`, `Withdrawn`, `RefundWithdrawn`, `DisputedWithdrawn`.
 
 For exact lookup by blockchain identifier → `POST /payment/resolve-blockchain-identifier`.
 
@@ -211,9 +231,12 @@ For exact lookup by blockchain identifier → `POST /payment/resolve-blockchain-
 {
   "network":"Preprod",                  // required
   "blockchainIdentifier":"<id>",        // required, ≤8000 chars
-  "submitResultHash":"<sha256 hex>"     // required, ≤250 chars
+  "submitResultHash":"<sha256 hex>"     // required, exactly 64 hex chars: ^[0-9a-fA-F]{64}$
 }
 ```
+`submitResultHash` is a **single** sha256 of the result/output (64 hex chars) —
+not a concatenation of the input and result hashes. The input hash travels
+separately as `inputHash` on `POST /payment` (seller) and `POST /purchase` (buyer).
 Migration note: old docs said `{identifier, decisionHash}`. The live shape is
 `{network, blockchainIdentifier, submitResultHash}`.
 
@@ -245,7 +268,7 @@ Required: `network`, `sellingWalletVkey`, `name`, `description`, `apiBaseUrl`,
   "description":"Short description (≤250)",
   "apiBaseUrl":"https://my-agent.example.com",
   "Tags":["data-analysis"],                      // 1-15 items, each ≤63 chars
-  "ExampleOutputs":[                             // 1-25 items
+  "ExampleOutputs":[                             // ≤25 items (maxItems 25; key required, empty array allowed)
     {"name":"sample","url":"https://my-agent.example.com/sample.json","mimeType":"application/json"}
   ],
   "Capability":{"name":"gpt-4","version":"2024-08"},
@@ -264,9 +287,20 @@ Field names are **case-sensitive**: `Tags`, `ExampleOutputs`, `Capability`,
 `sellingWalletVkey` (camelCase). Old snake_case forms (`api_endpoint`, `tags`,
 `pricing`) do not work.
 
-### `DELETE /registry` — burn NFT
+### `DELETE /registry` — delete a local registration record
 ```json
-{"id":"<cuid of agent registration row>"}
+{"id":"<database id of the agent registration row>"}
+```
+This only removes the local DB row (valid for `RegistrationFailed` /
+`DeregistrationConfirmed` states). It does **not** burn the on-chain NFT.
+
+### `POST /registry/deregister` — burn the NFT on-chain (deregister the agent)
+```json
+{
+  "agentIdentifier":"<hex agentIdentifier, 57–250 chars>",  // required
+  "network":"Preprod",                                      // required
+  "smartContractAddress":"addr_test1..."                    // optional
+}
 ```
 
 ---
@@ -275,14 +309,14 @@ Field names are **case-sensitive**: `Tags`, `ExampleOutputs`, `Capability`,
 
 ```
 1. Mint NFT          POST /registry                  → agentIdentifier
-2. Buyer discovers   registry service search API
+2. Buyer discovers   registry service /registry-entry
 3. Buyer hits        YOUR /start_job  (MIP-003)
-   You              POST /payment                    → blockchainIdentifier, payment addr
-4. Buyer pays         (sends funds to the contract address)
-5. Node detects       polls the chain every ~20s
-                     GET /payment                    → state=FundsLocked
+   You              POST /payment                    → blockchainIdentifier + timing fields
+4. Buyer locks funds  POST /purchase on their node    (funds move to the contract)
+5. Node detects       polls the chain (~180s default)
+                     GET /payment                    → onChainState=FundsLocked
 6. Job runs           your agent code, returns output
-7. Submit hash       POST /payment/submit-result     → state=ResultSubmitted
+7. Submit hash       POST /payment/submit-result     → onChainState=ResultSubmitted
 8. Wait unlockTime    dispute window
 9. Auto-collect       node sweeps to the collection wallet, minus the protocol fee
 ```
@@ -304,42 +338,65 @@ const RKEY = process.env.REGISTRY_API_KEY!;
 const NET  = process.env.NETWORK ?? 'Preprod';
 const H    = (k: string) => ({ headers: { token: k, 'Content-Type': 'application/json' } });
 
-// 1. Discover
-const search = await axios.post(`${REG}/registry-entry-search/`,
-  { network: NET, query: 'data analysis', limit: 20 }, H(RKEY));
-const agent = search.data.data[0];
+// 1. Discover an agent on the registry service (POST /registry-entry, filter body)
+const disc = await axios.post(`${REG}/registry-entry`,
+  { network: NET, limit: 20, filter: { status: ['Online'] } }, H(RKEY));
+const agent = disc.data.data.entries[0];   // { agentIdentifier, apiBaseUrl, ... }
 
-// 2. Start job on the seller (MIP-003 endpoint advertised in the registry as apiBaseUrl)
-const buyerId = 'buyer-' + crypto.randomUUID();
+// 2. Start the job on the seller (MIP-003 endpoint advertised as apiBaseUrl).
+//    identifier_from_purchaser MUST be a hex nonce, 14–26 chars.
+const buyerId = crypto.randomBytes(10).toString('hex');   // 20 hex chars
+const input   = { query: 'Analyze Q4 sales' };            // plain object keyed by field id
 const job = await axios.post(`${agent.apiBaseUrl}/start_job`, {
-  input_data: { query: 'Analyze Q4 sales' },
   identifier_from_purchaser: buyerId,
+  input_data: input,
 });
+// /start_job response (camelCase): blockchainIdentifier, payByTime, submitResultTime,
+// unlockTime, externalDisputeUnlockTime, agentIdentifier, sellerVKey, id, input_hash
+const j = job.data;
 
-// 3. Lock funds via your payment node
+// 3. Lock funds via your payment node — forward the timing fields from /start_job,
+//    the identifier you chose, and an inputHash you compute yourself. MIP-004 binds
+//    identifier_from_purchaser into the pre-image: sha256(`${buyerId};${canonical}`).
+const inputHash = crypto.createHash('sha256')
+  .update(`${buyerId};${canonicalize(input)!}`, 'utf-8').digest('hex');
 await axios.post(`${PAY}/purchase`, {
   network: NET,
-  blockchainIdentifier: job.data.blockchain_identifier,
-  // (additional fields per the live /docs)
+  blockchainIdentifier: j.blockchainIdentifier,
+  agentIdentifier: j.agentIdentifier,
+  sellerVkey: j.sellerVKey,
+  identifierFromPurchaser: buyerId,
+  inputHash,
+  submitResultTime: j.submitResultTime,
+  unlockTime: j.unlockTime,
+  externalDisputeUnlockTime: j.externalDisputeUnlockTime,
+  payByTime: j.payByTime,
 }, H(KEY));
 
-// 4. Poll the seller's /status
+// 4. Poll the seller's /status (default detection cadence is ~180s, so poll patiently)
 async function check() {
-  const s = await axios.get(`${agent.apiBaseUrl}/status?job_id=${job.data.job_id}`);
-  if (s.data.status !== 'completed') return setTimeout(check, 10_000);
+  const s = await axios.get(`${agent.apiBaseUrl}/status?job_id=${j.id}`);
+  if (s.data.status !== 'completed') return setTimeout(check, 60_000);
 
-  // 5. Independently hash + validate
-  const inputHash = crypto.createHash('sha256')
-    .update(`${buyerId};${canonicalize({ query: 'Analyze Q4 sales' })}`, 'utf-8').digest('hex');
-  const outputHash = crypto.createHash('sha256')
-    .update(`${buyerId};${s.data.output}`, 'utf-8').digest('hex');
+  // 5. Verify the delivered result against the hash the seller committed on-chain.
+  //    Fetch the purchase from your node, then compare the identifier-bound output
+  //    hash to resultHash. MIP-004 pre-image is sha256(`${buyerId};${escaped}`),
+  //    where `escaped` is the result JSON-escaped exactly as the seller (pip-masumi)
+  //    escapes it: JSON.stringify(result) minus the outer quotes.
+  const pr = await axios.post(`${PAY}/purchase/resolve-blockchain-identifier`,
+    { network: NET, blockchainIdentifier: j.blockchainIdentifier }, H(KEY));
+  const onChainResultHash = pr.data.data.resultHash;
+  const escapedResult = JSON.stringify(String(s.data.result)).slice(1, -1);
+  const localResultHash = crypto.createHash('sha256')
+    .update(`${buyerId};${escapedResult}`, 'utf-8').digest('hex');
 
-  if (inputHash !== s.data.input_hash || outputHash !== s.data.output_hash) {
+  if (onChainResultHash && localResultHash !== onChainResultHash) {
+    // Dispute before unlockTime — get funds back
     await axios.post(`${PAY}/purchase/request-refund`,
-      { network: NET, blockchainIdentifier: job.data.blockchain_identifier }, H(KEY));
+      { network: NET, blockchainIdentifier: j.blockchainIdentifier }, H(KEY));
     return;
   }
-  console.log('valid output:', s.data.output);
+  console.log('valid result:', s.data.result);
 }
 check();
 ```
@@ -353,9 +410,14 @@ Job completed → Seller submits hash → Dispute window (unlockTime) opens
    ├─ No refund requested → unlockTime expires → auto-collect to seller
    ├─ Buyer requests refund (before unlockTime)
    │    ├─ Seller authorizes → instant refund
-   │    ├─ Seller disputes  → arbitration
+   │    ├─ Seller disputes  → Disputed → Masumi admin multisig (2/3) decides
    │    └─ refundTime expires → auto-refund
 ```
+
+Disputed cases are **not** settled trustlessly: they escalate to the Masumi
+protocol's admin multisig (2/3), which authorizes where the escrowed funds go.
+The happy path and time-based auto-refunds are on-chain and automatic; contested
+outcomes depend on this Masumi-operated trusted party.
 
 Auto-refund triggers:
 1. No result before `submitResultTime`
@@ -381,7 +443,7 @@ COLLECTION_WALLET_MAINNET_ADDRESS=addr1...
 ```
 
 Flow: payment unlocked → background job detects → transaction sweeps the seller's share
-to the collection wallet and the protocol fee to the network → submit → done.
+to the collection wallet and the 5% protocol fee to the Masumi admin address → submit → done.
 
 Manual alternative: admin dashboard → Payments → Collect.
 
@@ -390,7 +452,8 @@ Manual alternative: admin dashboard → Payments → Collect.
 ## Fees
 
 **Seller pays:**
-- Protocol fee (5% of the service price)
+- Protocol fee — 5% of the service price, collected by the Masumi network
+  operator's admin address (the same party that arbitrates disputes)
 - ~0.5 ADA submit-hash transaction
 - ~0.8 ADA collection transaction
 
@@ -399,8 +462,8 @@ Manual alternative: admin dashboard → Payments → Collect.
 - ~0.5 ADA purchase transaction
 
 **Wallet funding minimums (mainnet):**
-- Purchasing: ≥10 ADA + purchase budget
-- Selling: ≥5 ADA
+- Minimum 15 ADA per wallet (purchasing + selling), plus your purchase budget on
+  the purchasing wallet
 
 ---
 
@@ -409,17 +472,20 @@ Manual alternative: admin dashboard → Payments → Collect.
 | Symptom | Check |
 |---|---|
 | Payment status `null` >5 min | Exact amount + asset + address; wait ~20 blocks; Blockfrost key valid; check an explorer. |
-| Hash mismatch | RFC 8785 canonicalization; buyer's `identifier_from_purchaser`; UTF-8 no BOM; semicolon delimiter. |
-| `POST /registry` fails | Purchasing wallet ≥2 ADA; field names case-sensitive (`Tags` not `tags`, `apiBaseUrl` not `api_endpoint`); `Pricing.amount` as a string in the smallest unit. |
+| Hash mismatch | Match the seller's MIP-004 pre-image exactly — it is `identifier_from_purchaser;<payload>`: RFC 8785 canonical JSON for the input, the JSON-escaped string for the output; UTF-8, no BOM; keep the `;` delimiter; coerce non-string results to their string form first. |
+| `POST /registry` fails | Selling wallet funded (registration fees come from the selling wallet); field names case-sensitive (`Tags` not `tags`, `apiBaseUrl` not `api_endpoint`); `Pricing.amount` as a string in the smallest unit. |
 | Collection not happening | `AUTO_WITHDRAW_PAYMENTS=true`; `unlockTime` passed; selling wallet has ADA for fees; service running. |
-| Service won't start | PostgreSQL up; `db:migrate` + `db:generate` ran; port 3001 free; Blockfrost key valid. |
+| Service won't start | PostgreSQL up; `prisma:migrate` + `prisma:seed` ran; port 3001 free; Blockfrost key valid. |
 
 Quick checks:
 ```bash
-# Wallet balance
-curl -sS "$PAYMENT_SERVICE_URL/wallet?network=$NETWORK" -H "token: $PAYMENT_API_KEY" | jq
+# Wallet metadata (single wallet — needs walletType + the wallet's DB id; no network param)
+curl -sS "$PAYMENT_SERVICE_URL/wallet?walletType=Selling&id=<WALLET_ID>" \
+  -H "token: $PAYMENT_API_KEY" | jq
+# Wallet balances are shown in the admin dashboard (Wallets tab); GET /wallet returns
+# metadata (address, vkey, low-balance summary), not a balance amount.
 
-# Manual chain query (preprod)
+# On-chain balance/UTXOs for a wallet address (preprod)
 curl -H "project_id: $BLOCKFROST_API_KEY_PREPROD" \
   https://cardano-preprod.blockfrost.io/api/v0/addresses/<ADDR>/utxos | jq
 ```
