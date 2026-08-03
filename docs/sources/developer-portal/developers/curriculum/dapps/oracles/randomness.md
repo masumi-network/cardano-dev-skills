@@ -1,13 +1,13 @@
 ---
 id: randomness
 title: On-chain Randomness
-sidebar_label: Randomness
+sidebar_label: On-chain randomness
 description: Cardano validators cannot generate random numbers, so verifiable randomness is something you construct. The patterns that work, commit-reveal and oracle-published block VRF, and their real security properties.
 ---
 
 Raffles, lotteries, games, and reward draws all need a random number, but there is no `random()` a Cardano validator can call. A [validator sees only the transaction and its context](/docs/developers/curriculum/smart-contracts/overview#smart-contracts-are-validators-not-actors), never the block it lands in, a clock, or a source of entropy. That is a direct consequence of [determinism](/docs/developers/curriculum/smart-contracts/overview#deterministic-validation): every node has to reach the same verdict, so nothing unpredictable is allowed inside validation.
 
-So randomness on Cardano is not something you read, it is something you **construct and make verifiable**. This page covers the patterns that actually work, and is honest about what each one protects against. There is no native, trustless, high-quality randomness primitive today, so the right choice depends on your trust model and how adversarial your setting is.
+So randomness on Cardano is not something you read, it is something you **construct and make verifiable**. This page covers the patterns that actually work, and is honest about what each one protects against. Cardano has no native, trustless, high-quality randomness primitive, so the right choice depends on your trust model and how adversarial your setting is.
 
 ## What good randomness has to be
 
@@ -51,16 +51,22 @@ Every Cardano block already carries a [verifiable random value](/docs/developers
 The trick that makes it unpredictable is timing: pick the VRF of a block that does not exist yet when a user commits, for example the block *after* the commit transaction. At commit time the value is unknown, and afterward anyone can recompute it from public data. Useful, but be blunt about the trust involved:
 
 - **You trust the oracle unless the contract re-verifies.** Publishing the VRF value on-chain is not the same as proving it. If the contract only checks the publisher's signature, a faulty or dishonest operator can post whatever value it likes. The result is *verifiable off-chain* (a consumer can recompute it), not *enforced on-chain*. This is the same integrity-versus-liveness distinction the [oracles page](/docs/developers/curriculum/dapps/oracles/overview#who-publishes-and-what-that-guarantees) draws for price feeds.
-- **Block producers can grind it.** The pool that wins the target slot computes its own VRF value before it publishes the block, so it can choose to withhold the block and try again. Block randomness is grindable today; hardening it is a protocol-level concern (the [grinding defense](/docs/developers/curriculum/fundamentals/consensus-and-ouroboros#common-attacks-and-defenses) in Ouroboros, with further work proposed in CIP-0161). If a draw's beneficiary could collude with a block producer, this matters.
+- **Block producers can grind it.** The pool that wins the target slot computes its own VRF value before it publishes the block, so it can choose to withhold the block and try again. Block randomness is grindable; hardening it is a protocol-level concern (the [grinding defense](/docs/developers/curriculum/fundamentals/consensus-and-ouroboros#common-attacks-and-defenses) in Ouroboros, with further work proposed in CIP-0161). If a draw's beneficiary could collude with a block producer, this matters.
 - **Extraction can bias the result.** Mapping a VRF output to your range carelessly (say, keeping only decimal digits of its string form) skews the distribution. Reduce modulo your range from the full output, and mind modulo bias.
 
 Oracle-published VRF is a good fit for public, auditable draws where the priority is that outsiders can check the result, and a poor fit where a well-resourced insider could collude with a block producer.
+
+## A VRF the validator itself verifies
+
+The oracle pattern above trusts the publisher unless the contract re-verifies, and re-verifying a *block's* VRF on-chain is not practical. But nothing stops you from running your own VRF: the BLS12-381 builtins let a validator [verify an ECVRF proof directly](/docs/developers/curriculum/smart-contracts/advanced/bls-primitives#verifiable-random-functions), so the proof itself travels in the transaction and the contract enforces its validity, not an operator's signature.
+
+The shape: an operator publishes a VRF public key in advance. Each round's input is public and fixed before the draw, a round number or the hash of a commit transaction. The operator computes the output and its proof off-chain and submits both; the validator checks the proof against the registered key and input. Because a VRF has exactly one valid output per key and input, the operator cannot grind alternatives; their only remaining power is **withholding**, refusing to publish a round they dislike. That shifts the trust from integrity (enforced on-chain) to liveness (mitigate with deposits and deadlines, as with commit-reveal).
 
 ## On-chain entropy to be wary of
 
 Some values sitting in the ledger look random and are not safe to treat as such:
 
-- **Block or transaction hashes and validity-range timestamps.** These are chosen or influenced by whoever builds the transaction or produces the block, so they are grindable. Treating a timestamp as randomness is a known footgun, see [time handling](/docs/developers/curriculum/smart-contracts/advanced/security/vulnerabilities/time-handling).
+- **Block or transaction hashes and validity-range timestamps.** These are chosen or influenced by whoever builds the transaction or produces the block, so they are grindable. Treating a timestamp as randomness is a known footgun, see [time handling](/docs/developers/curriculum/smart-contracts/security/vulnerabilities/time-handling).
 - **The treasury amount.** Plutus V3 (Conway) can expose the current treasury balance to a validator, but only when the transaction chooses to include that optional field, and only as the current value with no built-in delta. It changes each epoch, yet the change is mostly predictable, only the low digits are hard to guess. It updates once every ~5 days and is public for the whole epoch, so it is low-entropy and already known to anyone acting late in the epoch. At best a weak supplementary seed, never a standalone source.
 
 ## Choosing an approach
@@ -69,6 +75,7 @@ Some values sitting in the ledger look random and are not safe to treat as such:
 |---|---|
 | A fixed, accountable set of participants who each contribute | Commit-reveal with slashable deposits and a reveal deadline |
 | A public draw where auditability matters more than stopping a determined insider | Oracle-published block VRF, contract-verified where you can |
+| An accountable operator is acceptable, but their honesty about the *value* should not be assumed | Operator-run VRF with the proof verified in the validator; deposits and deadlines against withholding |
 | You only need a weak, non-adversarial nudge | On-chain entropy, with eyes open about its limits |
 | High value, open participation, and a strong adversary | No fully trustless native primitive exists; combine commit-reveal with deposits or a verifiable oracle, and design explicitly against grinding and withholding |
 
@@ -79,10 +86,12 @@ The honest bottom line: match the pattern to your threat model, and state the tr
 - **Validators cannot generate randomness.** Determinism forbids it, so verifiable randomness is constructed, not read.
 - **Commit-reveal is the only fully on-chain-enforceable pattern**, and its Achilles heel is the last revealer; deposits and deadlines are not optional.
 - **Block VRF is verifiable but not visible to a validator**, so it arrives through an oracle you must either trust or re-verify, and it is grindable by block producers.
+- **An operator-run VRF closes the integrity gap**: the validator verifies the proof itself via the BLS12-381 builtins, leaving only withholding to defend against.
 - **No native primitive is unpredictable, verifiable, grind-resistant, and high-entropy all at once.** Choose against your adversary, not against the happy path.
 
 ## Next steps
 
-- [Oracles on Cardano](/docs/developers/curriculum/dapps/oracles/overview): the publication and trust machinery an oracle-delivered random value rides on
+- [AI agents on Cardano](/docs/developers/curriculum/dapps/ai-agents/overview): the next track, agents that hold wallets and act on-chain
+- [BLS signatures, VRFs & credentials](/docs/developers/curriculum/smart-contracts/advanced/bls-primitives#verifiable-random-functions): the mechanics of an ECVRF a validator can verify
 - [Verifiable Random Functions](/docs/developers/curriculum/fundamentals/cryptographic-primitives#what-are-verifiable-random-functions-vrfs): what a VRF is and why its output is verifiable
-- [Time handling](/docs/developers/curriculum/smart-contracts/advanced/security/vulnerabilities/time-handling): why a timestamp is not a source of randomness
+- [Time handling](/docs/developers/curriculum/smart-contracts/security/vulnerabilities/time-handling): why a timestamp is not a source of randomness

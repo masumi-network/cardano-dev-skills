@@ -20,6 +20,8 @@ find_input_with_token(inputs, my_token)  // Searches entire list
 
 This becomes costly as transaction size grows due to limited execution budgets.
 
+There is a second, sneakier reason indices must come from the redeemer: **the ledger does not preserve input order**. A transaction's inputs are a set, re-sorted lexicographically by (transaction hash, output index) before the validator ever sees them, so on-chain code can never rely on the order in which the builder added inputs, and any correspondence between "the third input" and "the third thing to process" has to be re-established explicitly. Outputs are the opposite: they are a list that keeps exactly the order the builder created, which is why patterns on this page can walk outputs head-first while inputs need index hints.
+
 ## The Solution: Redeemer Indexing
 
 Leverage Cardano's deterministic script evaluation - all inputs to validators are known at transaction construction time:
@@ -275,4 +277,4 @@ one_to_one(validate, 1, 0, ...)  // Input 1 -> Output 0 (same!)
 ## Related Patterns
 
 - [Stake Validator](../stake-validator) - Multi-indexers work best with stake validators
-- [Double Satisfaction](../../security/vulnerabilities/double-satisfaction) - Vulnerability to protect against
+- [Double Satisfaction](/docs/developers/curriculum/smart-contracts/security/vulnerabilities/double-satisfaction) - Vulnerability to protect against
