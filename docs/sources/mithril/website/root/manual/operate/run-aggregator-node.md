@@ -60,6 +60,7 @@ Note that this guide works only on a Linux machine.
 - Operate a **Cardano full node**
 
 - To access the file system of the **Cardano full node**, you will need the following permissions:
+
   - Read rights on the `Database` folder (specified by the `--database-path` setting of the **Cardano node**)
   - Read and write rights on the `Inter Process Communication` file (typically defined by the `CARDANO_NODE_SOCKET_PATH` environment variable used to launch the **Cardano node**)
 
@@ -93,7 +94,7 @@ The actual resource requirements may vary depending on the signed entity types y
 
 :::info
 
-Compare the version of your Cardano node with the minimum supported versions listed in the [`networks.json`](https://github.com/input-output-hk/mithril/blob/main/networks.json) file to verify its compatibility with the Mithril aggregator.
+Compare the version of your Cardano node with the minimum supported versions listed in the [`networks.json`](https://github.com/IntersectMBO/mithril/blob/main/networks.json) file to verify its compatibility with the Mithril aggregator.
 
 First, check the version of your Cardano node by running the following command:
 
@@ -101,18 +102,18 @@ First, check the version of your Cardano node by running the following command:
 cardano-node --version
 ```
 
-Then, refer to the minimum supported versions listed in the [`networks.json`](https://github.com/input-output-hk/mithril/blob/main/networks.json) file.
+Then, refer to the minimum supported versions listed in the [`networks.json`](https://github.com/IntersectMBO/mithril/blob/main/networks.json) file.
 
 You can also fetch the minimum supported version for your network using the command below:
 
 ```bash
-wget -q -O - https://raw.githubusercontent.com/input-output-hk/mithril/main/networks.json | jq -r '."**YOUR_CARDANO_NETWORK**"."cardano-minimum-version"."mithril-aggregator"'
+wget -q -O - https://raw.githubusercontent.com/IntersectMBO/mithril/main/networks.json | jq -r '."**YOUR_CARDANO_NETWORK**"."cardano-minimum-version"."mithril-aggregator"'
 ```
 
 Here is an example for `preprod`:
 
 ```bash
-wget -q -O - https://raw.githubusercontent.com/input-output-hk/mithril/main/networks.json | jq -r '."preprod"."cardano-minimum-version"."mithril-aggregator"'
+wget -q -O - https://raw.githubusercontent.com/IntersectMBO/mithril/main/networks.json | jq -r '."preprod"."cardano-minimum-version"."mithril-aggregator"'
 ```
 
 :::
@@ -124,13 +125,13 @@ wget -q -O - https://raw.githubusercontent.com/input-output-hk/mithril/main/netw
 To download the source from GitHub (HTTPS), run:
 
 ```bash
-git clone https://github.com/input-output-hk/mithril.git
+git clone https://github.com/IntersectMBO/mithril.git
 ```
 
 Or (SSH):
 
 ```bash
-git clone git@github.com:input-output-hk/mithril.git
+git clone git@github.com:IntersectMBO/mithril.git
 ```
 
 #### Build the Mithril aggregator binary
@@ -273,10 +274,12 @@ The configuration values for the `/opt/mithril/mithril-aggregator.env` file are 
 - `CUSTOM_ORIGIN_TAG_WHITE_LIST`: Comma-separated list of custom origin tags to whitelist for client requests (default: `EXPLORER,BENCHMARK,CI,NA`).
 
 - **Base configuration** **optional** values are:
+
   - `BLOCKFROST_PARAMETERS`: Parameters to connect to the Blockfrost API. Used to fetch the ticker and name of the registered stake pools. Example: `{"project_id":"preprodWuV1ICdtOWfZYfdcxpZ0tsS1N9rVZomQ"}`
   - `SIGNER_IMPORTER_RUN_INTERVAL`: Time interval at which the pools names and ticker in blockfrost will be imported (in minutes, default: `720`).
 
 - The **Cardano database** configuration values are (only needed if supporting Cardano database certification):
+
   - `DB_DIRECTORY`: Directory of the Cardano node database stores (same as the `--database-path` setting of the Cardano node)
   - `DATA_STORES_DIRECTORY`: Directory where the aggregator will store its databases (eg, `/opt/mithril/stores`)
   - `GOOGLE_APPLICATION_CREDENTIALS_JSON`: JSON content of the GCP service account credentials (required if using GCP for snapshot storage)
@@ -300,6 +303,7 @@ The configuration values for the `/opt/mithril/mithril-aggregator.env` file are 
 Here is an **example** set of values for **release-preprod** that will be used in this guide in the **tip** boxes to illustrate some commands:
 
 - **Base configuration**:
+
   - **SIGNED_ENTITY_TYPES**: `MithrilStakeDistribution,CardanoStakeDistribution,CardanoTransactions` (only supporting stake distributions and transactions, excluding database snapshots)
   - **SERVER_PORT**: `8080`
   - **PUBLIC_SERVER_URL**: `https://aggregator.example.com/aggregator`
@@ -313,16 +317,18 @@ Here is an **example** set of values for **release-preprod** that will be used i
   - **CARDANO_NODE_VERSION**: `10.5.0`
   - **CHAIN_OBSERVER_TYPE**: `pallas`
   - **ERA_READER_ADAPTER_TYPE**: `cardano-chain`
-  - **ERA_READER_ADAPTER_PARAMS**: `$(jq -nc --arg address $(wget -q -O - https://raw.githubusercontent.com/input-output-hk/mithril/main/mithril-infra/configuration/release-preprod/era.addr) --arg verification_key $(wget -q -O - https://raw.githubusercontent.com/input-output-hk/mithril/main/mithril-infra/configuration/release-preprod/era.vkey) '{"address": $address, "verification_key": $verification_key}')`
-  - **GENESIS_VERIFICATION_KEY**: `$(wget -q -O - https://raw.githubusercontent.com/input-output-hk/mithril/main/mithril-infra/configuration/release-preprod/genesis.vkey)`
+  - **ERA_READER_ADAPTER_PARAMS**: `$(jq -nc --arg address $(wget -q -O - https://raw.githubusercontent.com/IntersectMBO/mithril/main/mithril-infra/configuration/release-preprod/era.addr) --arg verification_key $(wget -q -O - https://raw.githubusercontent.com/IntersectMBO/mithril/main/mithril-infra/configuration/release-preprod/era.vkey) '{"address": $address, "verification_key": $verification_key}')`
+  - **GENESIS_VERIFICATION_KEY**: `$(wget -q -O - https://raw.githubusercontent.com/IntersectMBO/mithril/main/mithril-infra/configuration/release-preprod/genesis.vkey)`
   - **DMQ_NODE_SOCKET_PATH**: `/dmq/ipc/node.socket`
   - **CUSTOM_ORIGIN_TAG_WHITE_LIST**: `EXPLORER,BENCHMARK,CI,NA`
 
 - **Optional configuration**:
+
   - **BLOCKFROST_PARAMETERS**: `{"project_id":"preprodWuV1ICdtOWfZYfdcxpZ0tsS1N9rVZomQ"}`
   - **SIGNER_IMPORTER_RUN_INTERVAL**: 720
 
 - **Cardano database configuration**:
+
   - **DB_DIRECTORY**: `/cardano/db`
   - **DATA_STORES_DIRECTORY**: `/opt/mithril/stores`
   - **GOOGLE_APPLICATION_CREDENTIALS_JSON**: `**YOUR_SECRET**`
@@ -1299,8 +1305,9 @@ If you want to make your follower aggregator publicly discoverable, you should:
 1. **Ensure your aggregator is accessible via HTTPS** by setting up Traefik or another reverse proxy with a valid SSL certificate (as described in the [Set up the SSL certificate](#setup-the-ssl-certificate-traefik) section).
 
 2. **Register your aggregator in the networks configuration**. You can do this by:
-   - Opening an issue in the [Mithril GitHub repository](https://github.com/input-output-hk/mithril/issues)
-   - Or by creating a pull request that modifies the [`networks.json`](https://github.com/input-output-hk/mithril/blob/main/networks.json) file and updates the `aggregators` field in the Cardano network you are targeting.
+
+   - Opening an issue in the [Mithril GitHub repository](https://github.com/IntersectMBO/mithril/issues)
+   - Or by creating a pull request that modifies the [`networks.json`](https://github.com/IntersectMBO/mithril/blob/main/networks.json) file and updates the `aggregators` field in the Cardano network you are targeting.
 
    Here is an example command to add an aggregator to the `release-preprod` network configuration:
 

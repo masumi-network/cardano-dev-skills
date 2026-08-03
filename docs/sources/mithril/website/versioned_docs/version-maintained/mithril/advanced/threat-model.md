@@ -10,19 +10,19 @@ sidebar_label: Threat model analysis
 This is a draft version of the **Mithril threat model**, prepared by the **Mithril core team**. It is open for external feedback and contributions before being finalized.
 
 - To contribute, use the **Edit this page** option at the bottom of the page.
-- If you discover a security vulnerability, report it responsibly by following the [security vulnerability disclosure policy](https://github.com/input-output-hk/mithril/blob/main/SECURITY.md).
+- If you discover a security vulnerability, report it responsibly by following the [security vulnerability disclosure policy](https://github.com/IntersectMBO/mithril/blob/main/SECURITY.md).
 
 :::
 
 This document provides an analysis of various security threats and possible mitigations affecting the Mithril network and its participants. It adopts an adversarial mindset, analyzing the system from an attacker's perspective.
 
-The threat model is a living document, updated to reflect the [latest Mithril version](https://github.com/input-output-hk/mithril/releases/latest).
+The threat model is a living document, updated to reflect the [latest Mithril version](https://github.com/IntersectMBO/mithril/releases/latest).
 
 ## System analysis
 
 ### System description
 
-:::info To do
+:::info[To do]
 
 - Consider reducing these details and moving them into the [architecture page](https://mithril.network/doc/mithril/mithril-network/architecture).
 - Also consider updating the [protocol page](https://mithril.network/doc/mithril/mithril-protocol/protocol).
@@ -35,7 +35,7 @@ The system consists of three main components: signers, aggregators, and clients.
 - **Mithril signing keys** are rotated every epoch and require certification by the Cardano KES key. Therefore, Mithril signers must have access to the KES key to register a signing key for each epoch.
 - **Cardano KES keys** are also used by the block-producing `cardano-node` and are typically located on the same machine that produces blocks. These keys must be evolved every 36 hours, although they can be rotated from a root key when needed. For more details, see [KES period documentation](https://github.com/input-output-hk/cardano-node-wiki/blob/main/docs/stake-pool-operations/7_KES_period.md).
 
-:::info To do
+:::info[To do]
 
 Is there a Cardano threat model available for this?
 
@@ -55,7 +55,7 @@ Mithril clients do connect to an aggregator using HTTP over TLS to query Mithril
 
 A Mithril client can verify the received Mithril certificate is linked to other certificates up to the genesis certificate and can be verified using the Mithril genesis verification key (see [details](https://mithril.network/doc/mithril/mithril-protocol/certificates/)).
 
-:::info To do
+:::info[To do]
 
 Missing: the currently recommended relay (reverse proxy)
 
@@ -114,6 +114,7 @@ For each asset, we first identify which part of the **CIA triad** (Confidentiali
 - The KES key is present only on the block-producing (BP) node but needs to be shared with both the `cardano-node` process and the `mithril-signer` process.
 - KES keys are needed by `mithril-signer` to sign a verification key along with an operational certificate that authenticates the key for this stake pool ID.
 - This signing happens at every epoch.
+
   - **Confidentiality**: Yes  
     Capturing KES private keys allows an attacker to impersonate a registered SPO on-chain and produce blocks on its behalf until the keys are rotated.
 
@@ -207,7 +208,7 @@ The genesis signing key is stored in IOG’s VaultWarden and used only once to g
 
 The [Mithril network upgrade strategy](https://mithril.network/doc/adr/4) describes how Mithril eras activate features on all nodes at specific epoch boundaries.
 
-An era address is used by signers to identify the current Mithril era, which defines the structure of snapshots and signatures. It is stored in [GitHub](https://raw.githubusercontent.com/input-output-hk/mithril/main/mithril-infra/configuration/release-mainnet/era.addr) and is only modifiable via a merged PR.
+An era address is used by signers to identify the current Mithril era, which defines the structure of snapshots and signatures. It is stored in [GitHub](https://raw.githubusercontent.com/IntersectMBO/mithril/main/mithril-infra/configuration/release-mainnet/era.addr) and is only modifiable via a merged PR.
 
 - **Confidentiality**: No (these are public files)
 - **Integrity**: Yes (tampering could disrupt multi-signature generation)
@@ -223,7 +224,7 @@ The current and next (if any) eras are announced on-chain with an era activation
 
 #### Era verification key
 
-The era verification key is in [GitHub](https://raw.githubusercontent.com/input-output-hk/mithril/main/mithril-infra/configuration/release-mainnet/era.vkey) and is only modifiable through a merged PR.
+The era verification key is in [GitHub](https://raw.githubusercontent.com/IntersectMBO/mithril/main/mithril-infra/configuration/release-mainnet/era.vkey) and is only modifiable through a merged PR.
 
 - **Confidentiality**: No
 - **Integrity**: No (the protocol enforces integrity checks)
@@ -267,7 +268,7 @@ Mithril artifacts are generated by the aggregator for specific data types (for e
 
 #### Mithril genesis verification key
 
-The genesis verification key is stored in [GitHub](https://github.com/input-output-hk/mithril/blob/main/mithril-infra/configuration/release-mainnet/genesis.vkey) and is only modifiable through an approved PR.
+The genesis verification key is stored in [GitHub](https://github.com/IntersectMBO/mithril/blob/main/mithril-infra/configuration/release-mainnet/genesis.vkey) and is only modifiable through an approved PR.
 
 - **Confidentiality**: No
 - **Integrity**: No (the protocol enforces integrity)
@@ -324,6 +325,7 @@ A DoS on the `mithril-aggregator`.
 Data integrity of the Cardano block producer’s on-disk database could be compromised either by the action of the Mithril signer or by an attacker with access to the signer.
 
 - **Assets at risk**:
+
   - [Block production](#block-production)
   - [Cardano chain database](#cardano-chain-database).
 

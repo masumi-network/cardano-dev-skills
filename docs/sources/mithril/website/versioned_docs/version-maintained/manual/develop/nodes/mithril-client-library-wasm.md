@@ -32,9 +32,9 @@ The Mithril network configurations are available in the [**Network configuration
 
 ## Resources
 
-|          Node           |                                        Source repository                                        |                                   Rust documentation                                   |                         Network configurations                         |
-| :---------------------: | :---------------------------------------------------------------------------------------------: | :------------------------------------------------------------------------------------: | :--------------------------------------------------------------------: |
-| **Mithril client WASM** | [:arrow_upper_right:](https://github.com/input-output-hk/mithril/tree/main/mithril-client-wasm) | [:arrow_upper_right:](https://mithril.network/rust-doc/mithril_client_wasm/index.html) | [:arrow_upper_right:](../../getting-started/network-configurations.md) |
+|          Node           |                                      Source repository                                       |                                   Rust documentation                                   |                         Network configurations                         |
+| :---------------------: | :------------------------------------------------------------------------------------------: | :------------------------------------------------------------------------------------: | :--------------------------------------------------------------------: |
+| **Mithril client WASM** | [:arrow_upper_right:](https://github.com/IntersectMBO/mithril/tree/main/mithril-client-wasm) | [:arrow_upper_right:](https://mithril.network/rust-doc/mithril_client_wasm/index.html) | [:arrow_upper_right:](../../getting-started/network-configurations.md) |
 
 ## Installation
 
@@ -144,7 +144,7 @@ console.log(
 );
 ```
 
-:::tip Adding Custom HTTP Headers
+:::tip[Adding Custom HTTP Headers]
 
 You can customize the HTTP headers sent by the Mithril client. This is particularly useful in scenarios where the Mithril client is used with a proxy, as it allows you to include headers like **Authorization** or custom headers for specific use cases. Below is an example of how to set custom headers:
 
