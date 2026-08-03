@@ -30,3 +30,15 @@ npm install @harmoniclabs/pebble
 ```
 
 ## Get started
+
+Have a look at the [`pebble` documentation](https://pluts.harmoniclabs.tech) where you can find some [example projects](https://pluts.harmoniclabs.tech/examples/Hello%20World) to help you get started.
+
+## Sponsors ❤️
+
+the [sponsors.md](./sponsors.md) file contains a list of supporters of this project.
+
+Every one of them is special and is contributing to making this software available for everyone.
+
+## Project Catalyst
+
+a collection of all proposals made in the past is in the [```catalyst-proposals.md```](./catalyst-proposals.md) file
