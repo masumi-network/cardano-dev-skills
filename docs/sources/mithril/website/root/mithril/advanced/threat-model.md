@@ -114,6 +114,7 @@ For each asset, we first identify which part of the **CIA triad** (Confidentiali
 - The KES key is present only on the block-producing (BP) node but needs to be shared with both the `cardano-node` process and the `mithril-signer` process.
 - KES keys are needed by `mithril-signer` to sign a verification key along with an operational certificate that authenticates the key for this stake pool ID.
 - This signing happens at every epoch.
+
   - **Confidentiality**: Yes  
     Capturing KES private keys allows an attacker to impersonate a registered SPO on-chain and produce blocks on its behalf until the keys are rotated.
 
@@ -187,13 +188,39 @@ Preventing signers from submitting signatures reduces the overall number of sign
 - **Integrity**: No (signatures are effectively tamper-proof)
 - **Availability**: Yes.
 
-#### Mithril protocol parameters
+#### Protocol configuration files
 
-Protocol parameters coordinate valid multi-signature production and are served by the aggregator.
+The [Mithril protocol configuration decentralization](https://mithril.network/doc/adr/13) ADR describes how Mithril protocol configurations are broadcast on all nodes at specific epoch boundaries.
 
-- **Confidentiality**: No (these parameters must be public)
-- **Integrity**: Yes (tampering with them could lead to invalid signatures)
+A protocol configuration address is used by aggregators and signers to identify the Mithril protocol configuration, which defines a window of three epochs with associated configurations. It is stored in [GitHub](https://raw.githubusercontent.com/IntersectMBO/mithril/main/mithril-infra/configuration/testing-preview/protocol-config.addr) and is only modifiable via a merged PR.
+
+- **Confidentiality**: No (these are public files)
+- **Integrity**: Yes (tampering could disrupt multi-signature generation)
 - **Availability**: Yes.
+
+#### Protocol configuration update
+
+The current and next (if any) protocol configurations are broadcast on-chain with a protocol configuration marker at specific epoch boundaries.
+
+- **Confidentiality**: No (public)
+- **Integrity**: Yes (tampering with the marker could break multi-signature generation)
+- **Availability**: Yes (the marker is on-chain).
+
+#### Protocol configuration verification key
+
+The protocol configuration verification key is in [GitHub](https://raw.githubusercontent.com/IntersectMBO/mithril/main/mithril-infra/configuration/testing-preview/protocol-config.vkey) and is only modifiable through a merged PR.
+
+- **Confidentiality**: No
+- **Integrity**: Yes (tampering could cause nodes to accept malicious protocol configuration markers or reject valid ones)
+- **Availability**: Yes (needed to verify protocol configuration markers).
+
+#### Protocol configuration signing key
+
+This key is stored in a secure vault and used only when a new protocol configuration is broadcast.
+
+- **Confidentiality**: Yes
+- **Integrity**: Yes
+- **Availability**: No.
 
 #### Mithril genesis signing key
 
@@ -324,6 +351,7 @@ A DoS on the `mithril-aggregator`.
 Data integrity of the Cardano block producer’s on-disk database could be compromised either by the action of the Mithril signer or by an attacker with access to the signer.
 
 - **Assets at risk**:
+
   - [Block production](#block-production)
   - [Cardano chain database](#cardano-chain-database).
 
