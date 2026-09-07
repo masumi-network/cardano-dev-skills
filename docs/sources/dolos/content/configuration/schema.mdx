@@ -72,6 +72,9 @@ genesis_key = "5b3...45d" # redacted
 [snapshot]
 download_url = "https://example.com/snapshot.tar.zst"
 
+[stelae.registry]
+user = "dolos"
+
 ```
 
 Each section of the toml controls a different aspect of Dolos' processes. The rest of this document describes in detail each of these sections.
@@ -98,7 +101,7 @@ The `upstream` section defines how to connect to the Ouroboros network to synchr
 
 ## `storage` section
 
-The `storage` section controls how Dolos stores data in the local file system. Each store (wal, state, archive, index, mempool) can be configured independently with its own backend and options.
+The `storage` section controls how Dolos stores data in the local file system. Each store (wal, state, archive, mempool) can be configured independently with its own backend and options.
 
 | property | type   | example |
 | -------- | ------ | ------- |
@@ -107,6 +110,17 @@ The `storage` section controls how Dolos stores data in the local file system. E
 
 - `path`: root directory where all data will be stored.
 - `version`: storage schema version (`v0` - `v3`).
+
+Besides the stores, this directory holds `scratch/`: where `dolos snapshot
+publish`, `dolos snapshot backfill`, `dolos bootstrap stelae` and `dolos
+snapshot verify` stage the layers they move over an OCI registry. It defaults
+here because this volume is already sized for the data; a mainnet transfer
+stages gigabytes. All but `verify` take `--scratch-dir` to point somewhere
+else.
+
+`dolos snapshot backfill` adds `mithril/`, the immutable window it replays
+from, for the same reason — the download is data-volume sized, and the command
+deletes the files it has consumed as it goes. `--download-dir` moves it.
 
 ### `storage.wal` section
 
@@ -134,43 +148,37 @@ The `storage` section controls how Dolos stores data in the local file system. E
 | worker_threads    | integer | 4       |
 | memtable_size_mb  | integer | 64      |
 
-- `backend`: `redb`, `fjall`, or `in_memory` (defaults to `fjall`).
+- `backend`: `fjall` or `in_memory` (defaults to `fjall`). `in_memory` keeps the whole state in process memory: it is ephemeral — everything is lost on restart — and it holds the UTxO set and all entities in RAM, so it suits devnets, tooling and tests rather than a node following a public network. The `redb` value was removed in v1.7: a configuration still naming it fails to load, and an existing redb state directory has to be re-bootstrapped (a stelae restore is the shortest path).
 - `path`: optional override for the state path (defaults to `<storage.path>/state`).
-- `cache`: size (MB) of the state cache (Redb/Fjall only).
-- `max_history`: maximum number of slots to keep before pruning (Redb/Fjall only).
+- `cache`: size (MB) of the state cache.
+- `max_history`: maximum number of slots to keep before pruning.
 - `max_journal_size`, `flush_on_commit`, `l0_threshold`, `worker_threads`, `memtable_size_mb`: Fjall tuning options.
 
 ### `storage.archive` section
 
-| property    | type    | example   |
-| ----------- | ------- | --------- |
-| backend     | string  | "redb"    |
-| path        | string  | "archive" |
-| blocks_path | string  | "blocks" |
-| cache       | integer | 500       |
+| property         | type    | example   |
+| ---------------- | ------- | --------- |
+| backend          | string  | "fjall"   |
+| path             | string  | "archive" |
+| blocks_path      | string  | "blocks"  |
+| cache            | integer | 500       |
+| max_journal_size | integer | 1024      |
+| flush_on_commit  | boolean | false     |
+| l0_threshold     | integer | 4         |
+| worker_threads   | integer | 4         |
+| memtable_size_mb | integer | 64        |
 
-- `backend`: `redb`, `in_memory`, or `no_op` (defaults to `redb`).
+- `backend`: `fjall`, `in_memory`, or `no_op` (defaults to `fjall`). `in_memory` keeps the whole archive in process memory, block bodies included: ephemeral — everything is lost on restart — so it suits devnets, tooling and tests rather than a node following a public network. `no_op` disables the archive entirely. The `redb` value was removed in v1.7: a configuration still naming it fails to load, and an existing redb archive has to be re-bootstrapped (a stelae restore is the shortest path).
 - `path`: optional override for the archive path (defaults to `<storage.path>/archive`).
-- `blocks_path`: optional override for block segment files (Redb only).
-- `cache`: size (MB) of the archive cache (Redb only).
-
-### `storage.index` section
-
-| property         | type    | example |
-| ---------------- | ------- | ------- |
-| backend          | string  | "fjall" |
-| path             | string  | "index" |
-| cache            | integer | 500     |
-| max_journal_size | integer | 1024    |
-| flush_on_commit  | boolean | false   |
-| l0_threshold     | integer | 8       |
-| worker_threads   | integer | 8       |
-| memtable_size_mb | integer | 128     |
-
-- `backend`: `redb`, `fjall`, `in_memory`, or `no_op` (defaults to `fjall`).
-- `path`: optional override for the index path (defaults to `<storage.path>/index`).
-- `cache`: size (MB) of the index cache (Redb/Fjall only).
+- `blocks_path`: optional override for block segment files.
+- `cache`: size (MB) of the archive index cache.
 - `max_journal_size`, `flush_on_commit`, `l0_threshold`, `worker_threads`, `memtable_size_mb`: Fjall tuning options.
+
+### `storage.index` section — removed in v1.7
+
+The standalone index store is gone. Its lookups moved into the stores that hold what they project: the live-UTxO tags into `storage.state`, and the historical tags and exact lookups into `storage.archive`. Drop the table from the configuration; v1.7 bumps the storage version, so an existing data directory has to be re-bootstrapped (a stelae restore is the shortest path) and its configuration revisited anyway.
+
+Any tuning the table carried (`cache`, `worker_threads`, `max_journal_size`, and the rest) should be re-applied to `storage.state` and `storage.archive`, which now carry the keyspaces. `index.backend = "no_op"` had no replacement and needs none: `archive.backend = "no_op"` is the ledger-only switch and drops the historical lookups with the archive, while the live-UTxO tags stay with the UTxO set they project.
 
 ### `storage.mempool` section
 
@@ -393,6 +401,57 @@ The `snapshot` section controls bootstrap from a snapshot archive.
 | download_url | string | "https://example.com/snapshot.tar.zst" |
 
 - `download_url`: URL of the snapshot archive to download.
+
+## `stelae` section
+
+The `stelae` section controls how this node reaches a **stele registry** — the OCI
+repositories `dolos bootstrap stelae --source oci://…` restores from and
+`dolos snapshot publish --repo oci://…` publishes into. `dolos snapshot
+backfill --repo oci://…` reads the same section: it is `publish` run in a loop,
+replaying mithril history one epoch at a time and publishing at each boundary.
+
+### `stelae.registry` section
+
+| property | type   | example |
+| -------- | ------ | ------- |
+| user     | string | "dolos" |
+| password | string | "a-private-registry-credential" |
+| token    | string | "ghp_…" |
+
+- `user`: the identity the registry is read as, sent as HTTP Basic.
+- `password`: optional. Omitted, Dolos uses the official registry's published
+  read-only password, which is compiled into the binary.
+- `token`: a bearer token, for a registry that issues them rather than accepting
+  a pair. Mutually exclusive with `user`.
+
+A registry may charge nothing for reads and still refuse an unidentified one. The
+credential the official registry hands out is not a secret — it is what makes
+free, identity-less access possible without leaving the registry unrestricted —
+but it is not written into your config either: `dolos init` seeds the `user` and
+leaves the password to the binary, so a rotation reaches every node that takes a
+release instead of having to be found again in every generated file. Set
+`password` to point at a registry of your own. Omit the section entirely to
+connect anonymously, which is what a genuinely public repository wants.
+
+Setting `token` and `user` at the same time is an error rather than a precedence
+puzzle — Dolos refuses to open the registry and names both — and so is setting
+`password` with no `user`.
+
+#### A publisher's credentials
+
+Those are real secrets and never belong in this file. Export them instead, using
+the same `DOLOS_` environment overrides that apply to [every other
+setting](./introduction#environmental-variables):
+
+```sh
+export DOLOS_STELAE_REGISTRY_USER=publisher
+export DOLOS_STELAE_REGISTRY_PASSWORD=…
+dolos snapshot publish --repo oci://…
+```
+
+There is nothing registry-specific about that: the environment layer overrides
+the file for every field, so a node that carries the read-only `user` in
+`dolos.toml` can publish with nothing to remove first.
 
 ## `logging` section
 
