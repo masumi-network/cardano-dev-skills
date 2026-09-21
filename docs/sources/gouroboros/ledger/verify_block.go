@@ -381,58 +381,65 @@ func blockLevelLimits(
 }
 
 // sumBlockExUnits sums the ExUnits (memory, steps) across every redeemer in
-// every transaction in the block. This reuses the same
+// every transaction level in the block. This reuses the same
 // TransactionWitnessRedeemers mechanism that each era's per-transaction
 // UtxoValidateExUnitsTooBigUtxo rule sums over, so the block-wide total is
 // computed from the same source of truth as the per-transaction check.
 func sumBlockExUnits(txs []common.Transaction) (common.ExUnits, error) {
 	var totalMemory, totalSteps int64
 	for _, tx := range txs {
-		witnesses := tx.Witnesses()
-		if witnesses == nil {
-			continue
-		}
-		redeemers := witnesses.Redeemers()
-		if redeemers == nil {
-			continue
-		}
-		for _, value := range redeemers.Iter() {
-			// Execution units are non-negative by protocol definition even
-			// though ExUnits stores them as signed int64. Reject a negative
-			// Memory or Steps before it is added to the running total: a
-			// malformed redeemer with a negative value would otherwise
-			// reduce the block-wide sum and could mask a budget that
-			// actually exceeds ppMaxBlockExUnits.
-			if value.ExUnits.Memory < 0 {
-				return common.ExUnits{}, fmt.Errorf(
-					"negative execution-unit memory in redeemer: %d",
+		subtransactionWitnessSets := common.SubTransactionWitnessSetsFromTransaction(
+			tx,
+		)
+		witnessSets := make(
+			[]common.TransactionWitnessSet,
+			0,
+			len(subtransactionWitnessSets)+1,
+		)
+		witnessSets = append(witnessSets, tx.Witnesses())
+		witnessSets = append(witnessSets, subtransactionWitnessSets...)
+		for _, witnesses := range witnessSets {
+			if witnesses == nil || witnesses.Redeemers() == nil {
+				continue
+			}
+			for _, value := range witnesses.Redeemers().Iter() {
+				// Execution units are non-negative by protocol definition even
+				// though ExUnits stores them as signed int64. Reject a negative
+				// Memory or Steps before it is added to the running total: a
+				// malformed redeemer with a negative value would otherwise
+				// reduce the block-wide sum and could mask a budget that
+				// actually exceeds ppMaxBlockExUnits.
+				if value.ExUnits.Memory < 0 {
+					return common.ExUnits{}, fmt.Errorf(
+						"negative execution-unit memory in redeemer: %d",
+						value.ExUnits.Memory,
+					)
+				}
+				if value.ExUnits.Steps < 0 {
+					return common.ExUnits{}, fmt.Errorf(
+						"negative execution-unit steps in redeemer: %d",
+						value.ExUnits.Steps,
+					)
+				}
+				var ok bool
+				totalMemory, ok = common.AddInt64Checked(
+					totalMemory,
 					value.ExUnits.Memory,
 				)
-			}
-			if value.ExUnits.Steps < 0 {
-				return common.ExUnits{}, fmt.Errorf(
-					"negative execution-unit steps in redeemer: %d",
+				if !ok {
+					return common.ExUnits{}, errors.New(
+						"block total execution-unit memory overflow",
+					)
+				}
+				totalSteps, ok = common.AddInt64Checked(
+					totalSteps,
 					value.ExUnits.Steps,
 				)
-			}
-			var ok bool
-			totalMemory, ok = common.AddInt64Checked(
-				totalMemory,
-				value.ExUnits.Memory,
-			)
-			if !ok {
-				return common.ExUnits{}, errors.New(
-					"block total execution-unit memory overflow",
-				)
-			}
-			totalSteps, ok = common.AddInt64Checked(
-				totalSteps,
-				value.ExUnits.Steps,
-			)
-			if !ok {
-				return common.ExUnits{}, errors.New(
-					"block total execution-unit steps overflow",
-				)
+				if !ok {
+					return common.ExUnits{}, errors.New(
+						"block total execution-unit steps overflow",
+					)
+				}
 			}
 		}
 	}
@@ -441,8 +448,9 @@ func sumBlockExUnits(txs []common.Transaction) (common.ExUnits, error) {
 
 // VerifyBlock performs block-local structural, cryptographic, and ledger
 // validation. It checks data available from the block and supplied verification
-// config, including body hash, VRF proof bytes, KES signature, transactions,
-// and optional stake pool registration.
+// config, including body hash, VRF proof bytes, the operational certificate's
+// cold-key signature, KES signature, transactions, and optional stake pool
+// registration.
 //
 // VerifyBlock is not full chain-context consensus validation. It does not
 // receive the previous header, active stake distribution, active slot
@@ -648,6 +656,48 @@ func VerifyBlock(
 			nil,
 		)
 	}
+	// Operational certificate cold-key signature, before the KES check that
+	// depends on it. The KES signature is verified against the hot vkey the
+	// header itself carries, so on its own it proves only that whoever wrote
+	// the header holds the matching KES secret -- not that the pool named by
+	// IssuerVkey ever authorized that hot key. Without this check a header
+	// naming a real pool, carrying an attacker's hot vkey and re-signed with
+	// the attacker's KES key, passes every other test in VerifyBlock.
+	//
+	// The issuer vkey is the cold verification key: a registered pool's pool
+	// id is the Blake2b-224 hash of exactly that key, so verifying against
+	// header.IssuerVkey is verifying against the registered cold key.
+	//
+	// Counter monotonicity and the max-KES-evolutions bound are not checked
+	// here: both need state VerifyBlock does not receive -- the pool's
+	// last-seen counter, and the Shelley genesis maxKESEvolutions.
+	//
+	// A header type ExtractOpCertFromHeader does not recognize is not a hole:
+	// ExtractKesFields below rejects exactly the same set of types outright,
+	// so no such header reaches the end of this function.
+	if opCert, ok := ExtractOpCertFromHeader(block.Header()); ok {
+		issuerVkey, _, err := extractHeaderFields(block.Header())
+		if err != nil {
+			return false, "", 0, 0, err
+		}
+		if err := VerifyOpCertSignature(opCert, issuerVkey); err != nil {
+			return false, "", 0, 0, common.NewValidationError(
+				common.ValidationErrorTypeOpCert,
+				"operational certificate cold signature invalid",
+				map[string]any{
+					"slot":               slot,
+					"block_number":       blockNo,
+					"era":                era,
+					"opcert_counter":     opCert.IssueNumber,
+					"opcert_kes_period":  opCert.KesPeriod,
+					"issuer_vkey_len":    len(issuerVkey),
+					"cold_signature_len": len(opCert.ColdSignature),
+				},
+				err,
+			)
+		}
+	}
+
 	signature, hotVkey, kesPeriod, err := ExtractKesFields(block.Header())
 	if err != nil {
 		return false, "", 0, 0, err
@@ -937,20 +987,37 @@ func VerifyBlock(
 				)
 			}
 		}
-		if dijkstraBlock, ok := block.(*dijkstra.DijkstraBlock); ok {
-			if err := dijkstra.ValidateRefScriptSizePerBlock(dijkstraBlock, config.ProtocolParameters); err != nil {
-				return false, "", 0, 0, common.NewValidationError(
-					common.ValidationErrorTypeTransaction,
-					"block reference-script size validation failed",
-					map[string]any{
-						"block_slot":   slot,
-						"block_number": blockNo,
-						"era":          era,
-					},
-					err,
-				)
-			}
+	}
+
+	var refScriptSizeErr error
+	if block.Era() != byron.EraByron &&
+		!config.SkipBlockLimitsValidation && len(block.Transactions()) > 0 {
+		switch typedBlock := block.(type) {
+		case *conway.ConwayBlock:
+			refScriptSizeErr = conway.ValidateRefScriptSizePerBlock(
+				typedBlock,
+				config.ProtocolParameters,
+				config.LedgerState,
+			)
+		case *dijkstra.DijkstraBlock:
+			refScriptSizeErr = dijkstra.ValidateRefScriptSizePerBlock(
+				typedBlock,
+				config.ProtocolParameters,
+				config.LedgerState,
+			)
 		}
+	}
+	if refScriptSizeErr != nil {
+		return false, "", 0, 0, common.NewValidationError(
+			common.ValidationErrorTypeTransaction,
+			"block reference-script size validation failed",
+			map[string]any{
+				"block_slot":   slot,
+				"block_number": blockNo,
+				"era":          era,
+			},
+			refScriptSizeErr,
+		)
 	}
 
 	// Verify stake pool registration (can be skipped via config)

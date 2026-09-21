@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 
 	"github.com/blinklabs-io/gouroboros/cbor"
@@ -53,6 +54,20 @@ func (vps *VotingProcedures) UnmarshalCBOR(cborData []byte) error {
 				return errors.New("voting procedures contain a nil action id")
 			}
 		}
+		if err := validateLogicalMapKeys(
+			procedures,
+			"voting procedure action map",
+			govActionIdLogicalKey,
+		); err != nil {
+			return err
+		}
+	}
+	if err := validateLogicalMapKeys(
+		map[*Voter]map[*GovActionId]VotingProcedure(tmp),
+		"voting procedures",
+		voterLogicalKey,
+	); err != nil {
+		return err
 	}
 	*vps = VotingProcedures(tmp)
 	return nil
@@ -186,18 +201,25 @@ type Voter struct {
 }
 
 func (v *Voter) UnmarshalCBOR(cborData []byte) error {
+	if v == nil {
+		return errors.New("nil Voter receiver")
+	}
 	if len(cborData) == 1 && (cborData[0] == 0xf6 || cborData[0] == 0xf7) {
 		return errors.New("voter cannot be CBOR null or undefined")
 	}
-	type tVoter Voter
-	var tmp tVoter
-	if _, err := cbor.Decode(cborData, &tmp); err != nil {
-		return err
+	var decoded struct {
+		cbor.StructAsArray
+		Type uint8
+		Hash Blake2b224
 	}
-	if tmp.Type > VoterTypeStakingPoolKeyHash {
-		return fmt.Errorf("invalid voter type: %d", tmp.Type)
+	if _, err := cbor.Decode(cborData, &decoded); err != nil {
+		return fmt.Errorf("decode voter: %w", err)
 	}
-	*v = Voter(tmp)
+	if decoded.Type > VoterTypeStakingPoolKeyHash {
+		return fmt.Errorf("invalid voter type: %d", decoded.Type)
+	}
+	v.Type = decoded.Type
+	copy(v.Hash[:], decoded.Hash[:])
 	return nil
 }
 
@@ -509,6 +531,18 @@ func NewGovAnchor(url string, dataHash []byte) (GovAnchor, error) {
 	}, nil
 }
 
+// MaxGovActionIdx is the largest governance action index the wire format
+// admits. The Conway and Dijkstra CDDL both type the field as
+// `gov_action_index : uint .size 2`, and cardano-ledger holds it in
+// `newtype GovActionIx = GovActionIx Word16`, whose derived decoder fails
+// above this value.
+//
+// GovActionIdx stays a uint32 to match TransactionInput.Index(), which this
+// repository types the same way for the equally 2-byte `index : uint .size
+// 2`. The bound is therefore enforced at decode rather than by the field's
+// type.
+const MaxGovActionIdx = math.MaxUint16
+
 type GovActionId struct {
 	cbor.StructAsArray
 	TransactionId [32]byte
@@ -528,17 +562,28 @@ func (id *GovActionId) ToPlutusData() data.PlutusData {
 	)
 }
 
-// String returns a CIP-0129 bech32-encoded representation of the governance action ID.
-// The format is: gov_action prefix with tx_id (32 bytes) + action_index (1 byte).
-// Per CIP-0129, the action index must fit in a single byte (0-255).
+// MaxCip0129GovActionIdx is the largest governance action index CIP-0129's
+// bech32 form can carry: its payload is a 32-byte transaction ID followed by
+// a single index byte.
+//
+// The Conway CDDL types the wire field as `uint .size 2`, so a decoded
+// GovActionId may legitimately exceed this. Rejecting such an index at decode
+// would refuse data the ledger accepts, so the excess is handled at
+// rendering instead.
+const MaxCip0129GovActionIdx = 255
+
+// String returns a CIP-0129 bech32-encoded representation of the governance
+// action ID: the gov_action prefix over tx_id (32 bytes) + action_index
+// (1 byte).
+//
+// An index above MaxCip0129GovActionIdx has no CIP-0129 representation, and
+// String has no way to report that, so it renders "<tx_id>#<index>" instead.
+// That form is not valid bech32 and will not round-trip through
+// UnmarshalText. Callers that need the difference reported must use
+// MarshalText, which returns an error for the same values.
 func (id *GovActionId) String() string {
-	if id.GovActionIdx > 255 {
-		panic(
-			fmt.Sprintf(
-				"gov action index %d exceeds maximum value 255 allowed by CIP-0129",
-				id.GovActionIdx,
-			),
-		)
+	if id.GovActionIdx > MaxCip0129GovActionIdx {
+		return fmt.Sprintf("%x#%d", id.TransactionId, id.GovActionIdx)
 	}
 
 	// Build payload: 32-byte transaction ID followed by 1-byte action index
@@ -569,10 +614,11 @@ func (id *GovActionId) MarshalText() ([]byte, error) {
 	if id == nil {
 		return nil, errors.New("nil GovActionId")
 	}
-	if id.GovActionIdx > 255 {
+	if id.GovActionIdx > MaxCip0129GovActionIdx {
 		return nil, fmt.Errorf(
-			"gov action index %d exceeds maximum value 255 allowed by CIP-0129",
+			"gov action index %d exceeds maximum value %d allowed by CIP-0129",
 			id.GovActionIdx,
+			MaxCip0129GovActionIdx,
 		)
 	}
 	return []byte(id.String()), nil
@@ -608,6 +654,13 @@ func NewGovActionId(txId []byte, idx uint32) (GovActionId, error) {
 		return GovActionId{}, fmt.Errorf(
 			"invalid gov action id transaction id length: expected 32 bytes, got %d",
 			len(txId),
+		)
+	}
+	if idx > MaxGovActionIdx {
+		return GovActionId{}, fmt.Errorf(
+			"invalid gov action index: %d exceeds the maximum of %d",
+			idx,
+			MaxGovActionIdx,
 		)
 	}
 	return GovActionId{
@@ -651,6 +704,14 @@ type GovAction interface {
 // GovActionWithPolicy is an optional interface for governance actions that have a policy script
 type GovActionWithPolicy interface {
 	GetPolicyHash() []byte
+}
+
+// ParameterChangeGovAction describes the era-independent parts of a
+// parameter-change governance action needed by shared validation rules.
+type ParameterChangeGovAction interface {
+	GovAction
+	PreviousGovActionId() *GovActionId
+	SecurityGroupFields() []string
 }
 
 type GovActionBase struct{}
@@ -719,10 +780,8 @@ func (a *TreasuryWithdrawalGovAction) UnmarshalCBOR(cborData []byte) error {
 	if _, err := cbor.Decode(cborData, &tmp); err != nil {
 		return err
 	}
-	for address := range tmp.Withdrawals {
-		if address == nil {
-			return errors.New("treasury withdrawal contains a nil address")
-		}
+	if err := ValidateWithdrawalAddresses(tmp.Withdrawals); err != nil {
+		return fmt.Errorf("treasury withdrawal: %w", err)
 	}
 	*a = TreasuryWithdrawalGovAction(tmp)
 	return nil
@@ -737,7 +796,7 @@ func (a *TreasuryWithdrawalGovAction) ToPlutusData() data.PlutusData {
 		})
 	}
 	policyHash := data.NewConstr(1)
-	if len(a.PolicyHash) > 0 {
+	if a.PolicyHash != nil {
 		policyHash = data.NewConstr(
 			0,
 			data.NewByteString(a.PolicyHash),
@@ -776,7 +835,7 @@ func NewTreasuryWithdrawalGovAction(
 			)
 		}
 	}
-	if len(policyHash) != 0 && len(policyHash) != Blake2b224Size {
+	if policyHash != nil && len(policyHash) != Blake2b224Size {
 		return nil, fmt.Errorf(
 			"invalid policy hash length: expected %d bytes, got %d",
 			Blake2b224Size,
@@ -824,7 +883,7 @@ type UpdateCommitteeGovAction struct {
 	Type        uint
 	ActionId    *GovActionId
 	Credentials []Credential
-	CredEpochs  map[*Credential]uint
+	CredEpochs  map[*Credential]uint64
 	Quorum      cbor.Rat
 }
 
@@ -838,6 +897,12 @@ func (a *UpdateCommitteeGovAction) UnmarshalCBOR(cborData []byte) error {
 		if credential == nil {
 			return errors.New("update committee contains a nil credential")
 		}
+	}
+	if err := validateCredentialMapKeys(
+		tmp.CredEpochs,
+		"update committee credential epochs",
+	); err != nil {
+		return err
 	}
 	*a = UpdateCommitteeGovAction(tmp)
 	return nil
@@ -857,7 +922,7 @@ func (a *UpdateCommitteeGovAction) ToPlutusData() data.PlutusData {
 	for cred, epoch := range a.CredEpochs {
 		addedPairs = append(addedPairs, [2]data.PlutusData{
 			cred.ToPlutusData(),
-			data.NewInteger(new(big.Int).SetUint64(uint64(epoch))),
+			data.NewInteger(new(big.Int).SetUint64(epoch)),
 		})
 	}
 
@@ -892,7 +957,7 @@ func (a UpdateCommitteeGovAction) isGovAction() {}
 func NewUpdateCommitteeGovAction(
 	actionId *GovActionId,
 	credentials []Credential,
-	credEpochs map[*Credential]uint,
+	credEpochs map[*Credential]uint64,
 	quorum cbor.Rat,
 ) (*UpdateCommitteeGovAction, error) {
 	// A zero-value cbor.Rat has a nil inner *big.Rat and panics when CBOR
@@ -934,7 +999,7 @@ func (a *NewConstitutionGovAction) ToPlutusData() data.PlutusData {
 		actionId = data.NewConstr(0, a.ActionId.ToPlutusData())
 	}
 	scriptHash := data.NewConstr(1)
-	if len(a.Constitution.ScriptHash) > 0 {
+	if a.Constitution.ScriptHash != nil {
 		scriptHash = data.NewConstr(
 			0,
 			data.NewByteString(a.Constitution.ScriptHash),
@@ -958,7 +1023,7 @@ func NewNewConstitutionGovAction(
 	anchor GovAnchor,
 	scriptHash []byte,
 ) (*NewConstitutionGovAction, error) {
-	if len(scriptHash) != 0 && len(scriptHash) != Blake2b224Size {
+	if scriptHash != nil && len(scriptHash) != Blake2b224Size {
 		return nil, fmt.Errorf(
 			"invalid script hash length: expected %d bytes, got %d",
 			Blake2b224Size,
