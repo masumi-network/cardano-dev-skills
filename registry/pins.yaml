@@ -21,7 +21,7 @@
 "Aiken": 20b105bcdf4842f31f24e36a2b9b8013670765ff
 "Aiken BLS Signatures": 31fe5e6e0a1fa262c2d61579a41dae4cedf4eb61
 "Aiken Design Patterns": dab059406035ed30a9464211822b1e5520d21cfc
-"Aiken Examples": 5bcde6d225e94587c68287615784ed5f3ceab141
+"Aiken Examples": b319d7f6679cacbf6b89a8119397627040082149
 "Aiken Stdlib": 41f3c823f8d36dc81c285f34c8c6e545e2fffbfd
 "Aiken ZKP Verifiers": 1d8990536a6b9cff760ce39a7ca8511cfacd879b
 "Amaru": 20fa9361a767b7a65739fd5b0e6fc789a6edfcfc
@@ -29,18 +29,18 @@
 "BLS12-381 Examples and Standards": aca741b2004dfb8e36803819d43fcc7cd488dbb2
 "Blockfrost OpenAPI": 999b79da7c8ec0ac2a4d79cfcfc7032103d5e6fa
 "Buildooor": 7551104ea29d5606c2dd00d17c7ff71a2fe28d29
-"CHaP": 2f7b3284bf0eaad106d5ff275dab9fdae8f1d167
+"CHaP": 7c33a06a621a4c0689492c87ff57ac5d71bce997
 "CIP-113 Programmable Tokens": 78fd335a569ac8ca487a33e11919ad34d84e00b3
 "CIP-113 Programmable Tokens Platform": c747a205bef4b0acbf14a165e8a30f73172fd50e
 "CIP-113 SDK (TypeScript)": 44ba5b3dae6d5d519721b511480ff54c2e7be2f5
 "CIPs": d07a30bca36a28535afa151915bb4900b2116d3a
-"Cardano Addresses": 75588b052ead9fcd4925506c95d29b686e28f036
+"Cardano Addresses": 6a36be3461325fdf6f3878b994450f8a006dd63a
 "Cardano CLI": 94c0bf1ed261a70719f7b461413ea43dc09ff815
 "Cardano Connect with Wallet": 47ceba88338f19b576bf72251e8158a7883a5e45
-"Cardano Docs": bfee08919c6b3bcd484ca86f6e18f4e2e0eaf825
+"Cardano Docs": 31616f9ce1cd64d6311a911b6c386681b258a358
 "Cardano GraphQL": f4ce4b3baf56b719600e4b7a5d264f7f2fcad466
-"Cardano Ledger": 15eee8cb0adfe94f8e26a7057b734b85ff8ee94e
-"Cardano Ledger API Blaster": 5dab3c43f042b8735b6d067223baaa8d32ed28a1
+"Cardano Ledger": 9975f3d3f36869822eee7225c8422aacafe57790
+"Cardano Ledger API Blaster": 4f80a9f5bd440edf44fe7d6f09e9f14f730cd53f
 "Cardano Node Antithesis": b8a7c1d471129faf8aa453b77c159d69183ad2a8
 "Cardano Node Wiki": 2b069655b5cacda7be6c2ac21a4fa159ec6a4c09
 "Cardano Serialization Lib": 6b4253814f1831fee06cda2718fd47174960ace1
@@ -53,16 +53,16 @@
 "Developer Portal": e12479383e1cf9b449c731bd35e43327e54c7775
 "Dingo": 4e1ab0fe55817ca038f4b3dcde963d0a250c11c9
 "Dolos": ce3d042ee91ec778cbd7f3c605f025e1ef82620e
-"Evolution SDK": 2b6825ffaab4d37b5631708a1f60c10272444a1d
-"Evolution SDK Packages": 2b6825ffaab4d37b5631708a1f60c10272444a1d
+"Evolution SDK": 0167cf91381eea2c2f33db5ab1396a66b4dbe2da
+"Evolution SDK Packages": 0167cf91381eea2c2f33db5ab1396a66b4dbe2da
 "GovTool": ab64084322737fb330cafdf4178b0bdf0fd1746b
-"Helios": 35440c890c128248f64196cd8394f87bf30de58c
+"Helios": 7364d795562b96d14b1e177b28c103eb240d0f54
 "Hydra": 99330cc08bb3a12b09ddbbe909a6d9a2633a57ef
 "Koios": 2e2eb57933e1e2528de5ca36ee961759841cf389
-"Kupo": 7ee832c4ac50d156f4c62204dadc1b6b826cda26
-"Lean Blaster": 3a141c8d06f13e9c2840cfeb24fdb1eaa9b7f8f5
+"Kupo": 1c7346789188d7a1a05343e7888ad8f08854cbca
+"Lean Blaster": 585c5fc1370196a03cfceec674f5a5ac2ed3c2f2
 "Masumi": 020c3b47153bc110b9d1c6f60cf957aadac25c8c
-"Mesh SDK": 5e5a792353885eca9b26c160312f2af399b0fd98
+"Mesh SDK": b618b3f7a670015f92456d08d868bf32ed7692e6
 "Mesh SDK Packages": a2d7482dce0fa48681769b8dd25965ddf5eeb5b1
 "Mithril": 135243656d68b2da188c9c0473769313be6a539d
 "Ogmios": 435189aea2d9a047dc395a6f1cdef737d52f1cbe
@@ -70,7 +70,7 @@
 "Oura": 8433b1049b250b1c1ccc174e5ee17d5963effe5c
 "Ouroboros Leios": 9fa5a956db7a7860065b68e221c6f7ce647242d5
 "Pallas": 0ea294c1273b9c4a5a0a9f767897800589f5e02b
-"Pebble": 9f1ee2edb7d8a9e12093146bf0757118ac957ae1
+"Pebble": d6a5a75575d6091bc0bd3f63d5daa225d6772677
 "Plinth": 7d6eead0f0fba7958125a03a5123acef9f0e9c69
 "Plutarch": 87e11994c45b6af4768e5b6146d9c94879e279b5
 "PyCardano": 877be3ad9a2221fce7eac777c9927430cbc3b868
@@ -84,7 +84,7 @@
 "Yaci Store": f5029134592874b199d97ee0b5d4ad739dc453bb
 "blockfrost-go": 7c2f324c451977a542722ebcb6ec1c70f3d26b1e
 "cardano-client-lib": 55f3ba86d0c1b6af5a062963fb960743cf647724
-"cardano-js-sdk": 0c0e700237ca524d8bd73054e3518fb182d09e46
+"cardano-js-sdk": 1a08af20cba29de7798cc96f76e707796b92607b
 "gOuroboros": 4c824e73080ae9e3226010c9be9214fe5e21437c
-"haskell.nix": 08c78e70d59255bac50c9201efb7b189ef39e393
-"iohk-nix": 9ebcc963cc35bf8ba974a069186dbe101dfdf395
+"haskell.nix": 4465c5e1edf40d4d7d47378af4fb54ace8121254
+"iohk-nix": e6c27fbdece26694a3edcf636a2687b257361c26
