@@ -7,7 +7,7 @@ Monitoring dashboards for [Dingo](https://github.com/blinklabs-io/dingo), the Go
 | Dashboard | File | Description |
 |-----------|------|-------------|
 | **Node Overview** | `node-overview.json` | At-a-glance header (epoch, slot, tip gap, density, blockfetch, mempool, KES, peers, storage, runtime), block height, epoch progress, forging stats |
-| **Block Production** | `block-production.json` | Forge latency heatmap, block delay CDFs, forge rates, KES lifecycle |
+| **Block Production** | `block-production.json` | Forge latency heatmap, block delay CDFs, forge rates, KES lifecycle, per-block composition vs. SQL query volume |
 | **Peer Health** | `peer-health.json` | Hot/warm/cold peers, connection types, peer state timeseries, promotions/demotions, network I/O |
 | **Mempool** | `mempool.json` | Pending TXs, mempool size, TX lifecycle, CBOR cache, event bus |
 | **Resource Usage** | `resources.json` | CPU, memory, GC heatmap, disk I/O, IOPS, PSI pressure, Badger, file descriptors |
@@ -94,6 +94,19 @@ Dashboards use your default Prometheus datasource automatically — see [Datasou
 
 The alert rules file is ready to use as-is — no editing required.
 
+To validate it after an edit:
+
+```bash
+promtool check rules docs/dashboards/alerts.yaml
+cd docs/dashboards && promtool test rules alerts_test.yaml
+```
+
+`check rules` only proves the file parses and the PromQL is well-formed.
+`test rules` replays synthetic series against the rules and asserts what
+fires, which is the only way to catch a rule that is valid but wrong — a
+counter pre-materialized at zero makes `rate() == 0` true from process
+start, so a liveness rule can alert against a perfectly healthy run.
+
 Copy the file to your Prometheus rules directory:
 
 ```bash
@@ -168,6 +181,7 @@ docs/dashboards/
   provisioning.yaml        Grafana provisioning config
   prometheus.yaml          Prometheus scrape config snippet
   alerts.yaml              Prometheus alert rules
+  alerts_test.yaml         promtool test cases for alerts.yaml
   README.md                This file
 ```
 

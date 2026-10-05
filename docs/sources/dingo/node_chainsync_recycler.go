@@ -65,7 +65,7 @@ func (n *Node) chainsyncObservePeerTip(
 // peer's observed frontier (ApplyRollback), which can change its corroboration
 // status; delivering that observation asynchronously would let the apply gate
 // read pre-trim state and forward a rollback for a peer that the rollback has
-// just made uncorroborated (issue #2928). It returns true when handled
+// just made uncorroborated. It returns true when handled
 // synchronously, so the ouroboros layer skips the async PeerRollbackEvent
 // publish to avoid a double update. Unlike chainsyncObservePeerTip there is no
 // peergov touch: only the chain selector subscribes to PeerRollbackEvent.
@@ -256,6 +256,7 @@ func (n *Node) handleChainSelectedNoneEventLocked(
 		"previous_connection", prevConn,
 		"genesis_corroboration", e.GenesisCorroboration,
 	)
+	n.recordChainSelectionStall(e.GenesisCorroboration)
 	if n.chainSelector == nil {
 		// Direct callers without a selector cannot perform the current-selection
 		// recheck above, so retain the event's compare-and-clear behavior.
@@ -489,8 +490,11 @@ func (n *Node) startChainsyncStallRecycler(
 
 // waitChainsyncStallRecycler stops the recycler and waits for it to exit.
 //
-// This wait is intentionally not bounded by the shutdown timeout: advancing
-// while the recycler is still active can race dependency teardown.
+// The wait itself is unbounded: advancing while the recycler is still active
+// can race dependency teardown. shutdown() bounds it from outside with
+// stopWithDeadline, which is safe only because the recycler reaches node
+// components solely through WithLiveComponents, whose TryLock on
+// liveLifecycleMu fails while shutdown holds that lock.
 func (n *Node) waitChainsyncStallRecycler() {
 	if n.chainsyncStallRecycler == nil {
 		return

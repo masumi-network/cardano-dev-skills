@@ -128,6 +128,48 @@ func (n *Node) configuredShutdownTimeout() time.Duration {
 	return 30 * time.Second
 }
 
+// shutdownPhase1ComponentStops is every phase-1 component whose Stop cancels
+// its own context and then waits for a goroutine to exit with no deadline of
+// its own. Live restore/truncate already bounds this style of wait, but the
+// normal process-shutdown path did not: a goroutine that never observes
+// n.cancel() could wedge Node.Stop past shutdownTimeout with no error for the
+// caller to act on.
+//
+// The two context-owned waits run first and unconditionally -- both no-op
+// when their worker was never started. The selected-to-none worker must
+// finish before n.chainSelector is stopped below, since it reads the
+// selector's state. Both workers touch node components only while holding
+// liveLifecycleMu (via TryLock), which shutdown already holds by phase 1, so
+// bounding their wait cannot let teardown race a component they are using.
+//
+// The rest is quiesceComponentStops (node_lifecycle.go), reused rather than
+// copied: every component live restore/truncate must stop before closing
+// storage must equally stop before phase 3 closes it here, and a component
+// added to one list cannot then be missed by the other. None of them depends
+// on n.chainSelector or n.peerGov still running, and quiesce already stops
+// them before n.peerGov. n.chainSelector.Stop and n.peerGov.Stop(ctx) stay
+// direct calls after this list (chainSelector.Stop only cancels and does not
+// wait; peerGov.Stop already honors ctx).
+func (n *Node) shutdownPhase1ComponentStops() []namedStop {
+	return append([]namedStop{
+		{
+			name: "chainsync stall recycler",
+			stop: func() error { n.waitChainsyncStallRecycler(); return nil },
+		},
+		{
+			name: "chain-selected-to-none worker",
+			stop: func() error { n.waitChainSelectedNoneWorker(); return nil },
+		},
+	}, n.quiesceComponentStops()...)
+}
+
+// componentStopsForShutdownPhase1 is (*Node).shutdownPhase1ComponentStops,
+// indirected through a variable so a shutdown-level test can inject a stop
+// that blocks until released -- the same seam componentStopsForQuiesce uses,
+// and for the same reason: none of these components can be made to block
+// from outside the package.
+var componentStopsForShutdownPhase1 = (*Node).shutdownPhase1ComponentStops
+
 func (n *Node) shutdown() error {
 	shutdownTimeout := n.configuredShutdownTimeout()
 	deadline := time.Now().Add(shutdownTimeout)
@@ -187,25 +229,30 @@ func (n *Node) shutdown() error {
 	// Phase 1: Stop accepting new work
 	n.config.logger.Info("shutdown phase 1: stopping new work")
 
-	// n.cancel() above asks the stall recycler to stop; wait here so it cannot
-	// race later shutdown phases that close connection, ledger, or DB state.
-	n.waitChainsyncStallRecycler()
-	// The selected-to-none worker is also context-owned. Wait for it before
-	// tearing down the selector or the chainsync state it reads.
-	n.waitChainSelectedNoneWorker()
-
-	// Stop block forger first to prevent new blocks
-	if n.blockForger != nil {
-		n.blockForger.Stop()
-	}
-
-	// Stop leader election to clean up resources
-	if n.leaderElection != nil {
-		if stopErr := n.leaderElection.Stop(); stopErr != nil {
-			err = errors.Join(
-				err,
-				fmt.Errorf("leader election shutdown: %w", stopErr),
-			)
+	// Each of these components waits for a goroutine to exit with no deadline
+	// of its own, so bound each wait here rather than calling Stop directly --
+	// see shutdownPhase1ComponentStops for the set and its ordering, and
+	// stopWithDeadline (node_lifecycle.go) for why an unfinished wait
+	// escalates to errStorageDrainUnconfirmed rather than being reported as
+	// an ordinary stop failure.
+	//
+	// Unlike quiesceForLiveLifecycleOp, each stop gets only what remains of
+	// the one shutdown deadline, not a fresh shutdownTimeout: shutdown's
+	// timeout is a single absolute deadline shared by every phase, and once
+	// it has passed phase 3 cannot confirm the ledger-state close anyway, so
+	// waiting longer here would only delay the return.
+	// storageDrainConfirmed turns false when any stop or close that may leave
+	// a goroutine using ledger state or the database failed to finish; phase 3
+	// then skips closing both.
+	storageDrainConfirmed := true
+	for _, cs := range componentStopsForShutdownPhase1(n) {
+		if stopErr := stopWithDeadline(
+			max(time.Until(deadline), 0), cs.name, cs.stop,
+		); stopErr != nil {
+			if errors.Is(stopErr, errStorageDrainUnconfirmed) {
+				storageDrainConfirmed = false
+			}
+			err = errors.Join(err, stopErr)
 		}
 	}
 
@@ -218,24 +265,6 @@ func (n *Node) shutdown() error {
 			err = errors.Join(
 				err,
 				fmt.Errorf("peer governor shutdown: %w", stopErr),
-			)
-		}
-	}
-
-	if n.snapshotMgr != nil {
-		if stopErr := n.snapshotMgr.Stop(); stopErr != nil {
-			err = errors.Join(
-				err,
-				fmt.Errorf("snapshot manager shutdown: %w", stopErr),
-			)
-		}
-	}
-
-	if n.dbLifecycleMgr != nil {
-		if stopErr := n.dbLifecycleMgr.Stop(); stopErr != nil {
-			err = errors.Join(
-				err,
-				fmt.Errorf("database lifecycle manager shutdown: %w", stopErr),
 			)
 		}
 	}
@@ -266,8 +295,10 @@ func (n *Node) shutdown() error {
 	// API providers are stopped before consumers and stateful dependencies.
 	if n.pluginHost != nil {
 		for _, capability := range []plugin.Capability{
+			plugin.CapabilityAPIMcp,
 			plugin.CapabilityAPIUtxorpc,
 			plugin.CapabilityAPIMesh,
+			plugin.CapabilityAPIKupo,
 			plugin.CapabilityAPIBlockfrost,
 		} {
 			if stopErr := n.pluginHost.StopCapability(ctx, capability); stopErr != nil {
@@ -343,9 +374,25 @@ func (n *Node) shutdown() error {
 		}()
 	}
 
+	// Waiting for in-flight handlers is intended, but only until the shutdown
+	// deadline: a handler blocked on something other than the network is not
+	// released by the connection manager stopping. An abandoned close leaves
+	// a handler that may still be using ledger state and the database, so it
+	// withholds those closes exactly as an unconfirmed phase-1 stop does.
 	if n.eventBus != nil {
 		n.config.logger.Info("closing event bus while draining connections")
-		n.eventBus.Close()
+		if closeErr := n.eventBus.CloseContext(ctx); closeErr != nil {
+			n.config.logger.Error(
+				"event bus did not close before the shutdown deadline",
+				"error", closeErr,
+			)
+			storageDrainConfirmed = false
+			err = errors.Join(
+				err,
+				errStorageDrainUnconfirmed,
+				fmt.Errorf("event bus shutdown: %w", closeErr),
+			)
+		}
 	}
 
 	if connManagerDone != nil {
@@ -365,21 +412,37 @@ func (n *Node) shutdown() error {
 	// Phase 3: Flush state and close database
 	n.config.logger.Info("shutdown phase 3: flushing state")
 	phase3Start := time.Now()
-	ledgerStateDrainConfirmed := true
-
 	if n.ledgerState != nil {
-		n.config.logger.Info("closing ledger state")
-		if closeErr := n.closeWithShutdownTimeout(
-			ctx,
-			"ledgerState",
-			shutdownTimeout,
-			n.ledgerState.Close,
-		); closeErr != nil {
-			ledgerStateDrainConfirmed = false
+		if !storageDrainConfirmed {
+			// The block forger, leader election, both Leios managers, and
+			// event handlers call into n.ledgerState from their own
+			// goroutines, so a stop or handler that outlived the deadline may
+			// still be using it. Leave it open, as Restore/Truncate skip
+			// closeStorageForLiveLifecycleOp when quiesce reports
+			// errStorageDrainUnconfirmed.
+			n.config.logger.Error(
+				"skipping ledger state close because shutdown drain was not confirmed",
+			)
 			err = errors.Join(
 				err,
-				fmt.Errorf("ledger state close: %w", closeErr),
+				errors.New(
+					"ledger state close skipped: shutdown drain unconfirmed",
+				),
 			)
+		} else {
+			n.config.logger.Info("closing ledger state")
+			if closeErr := n.closeWithShutdownTimeout(
+				ctx,
+				"ledgerState",
+				shutdownTimeout,
+				n.ledgerState.Close,
+			); closeErr != nil {
+				storageDrainConfirmed = false
+				err = errors.Join(
+					err,
+					fmt.Errorf("ledger state close: %w", closeErr),
+				)
+			}
 		}
 	}
 
@@ -407,7 +470,7 @@ func (n *Node) shutdown() error {
 	}
 
 	if n.db != nil {
-		if !ledgerStateDrainConfirmed {
+		if !storageDrainConfirmed {
 			n.config.logger.Error(
 				"skipping database close because ledger state drain was not confirmed",
 			)
@@ -433,7 +496,7 @@ func (n *Node) shutdown() error {
 		}
 	}
 	if n.pluginHost != nil {
-		if !ledgerStateDrainConfirmed {
+		if !storageDrainConfirmed {
 			n.config.logger.Error(
 				"skipping plugin host shutdown because ledger state drain was not confirmed",
 			)
