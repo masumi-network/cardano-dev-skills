@@ -17,7 +17,7 @@
 # a safety net so a missing pin never breaks a fetch — not the intended path
 # for a new source: unpinned content has no recorded provenance, and every
 # fetch re-resolves it to whatever the tip happens to be at the time.
-"Adder": 3f7a5c2800329f509ba0345934cfd32d4e9397bb
+"Adder": 55374a505e06f0406088dac3295c4cbb440004d9
 "Aiken": 7644b3879af2fc9d25df35249fb9b688c17238b1
 "Aiken BLS Signatures": 31fe5e6e0a1fa262c2d61579a41dae4cedf4eb61
 "Aiken Design Patterns": 0594253ccc9c4f12e986c90105376b34f9ab1270
@@ -29,7 +29,7 @@
 "BLS12-381 Examples and Standards": d0128d81c43665a3d7cafe89a0b379e8e1cdeb09
 "Blockfrost OpenAPI": 05c6d61311f2d4d5c701d029ba702be86d36da69
 "Buildooor": 7551104ea29d5606c2dd00d17c7ff71a2fe28d29
-"CHaP": d0d5ca0916f041a03d03b3812f67376a77bb7845
+"CHaP": 5ed217456276478fb03373f20130339bd549836b
 "CIP-113 Programmable Tokens": 369e8c280609208b388c77937dc3a18e02561b0a
 "CIP-113 Programmable Tokens Platform": a2374cf2883a5a598ca4ac78e7c493a8b8c8f33c
 "CIP-113 SDK (TypeScript)": d34a35b44d9d4ca15a7e76e7f7633dda42d1fd89
@@ -39,13 +39,13 @@
 "Cardano Connect with Wallet": 47ceba88338f19b576bf72251e8158a7883a5e45
 "Cardano Docs": 31616f9ce1cd64d6311a911b6c386681b258a358
 "Cardano GraphQL": fcfe3154115ef176788a60b2eae925ee42aabd7c
-"Cardano Ledger": 8e0560f20e1855170acd16871a5fea673b46f737
-"Cardano Ledger API Blaster": 5dab3c43f042b8735b6d067223baaa8d32ed28a1
+"Cardano Ledger": f4bcfc0e87f726ab010c6383dbefcc8927cf86c5
+"Cardano Ledger API Blaster": 9938562fd452351655fe2f6b63e583c62422687c
 "Cardano Node Antithesis": f3da6d4386bd27c1bed0f21f9d625c1c82da747c
 "Cardano Node Wiki": 2b069655b5cacda7be6c2ac21a4fa159ec6a4c09
 "Cardano Serialization Lib": 6b4253814f1831fee06cda2718fd47174960ace1
 "Cardano Use Case Templates": cbc86fc5d5a25daece94666a9e6f1c48368c1c72
-"Cardano Wallet": 10191e346bad70deeb35e89c9a32aaa33e43a633
+"Cardano Wallet": 4209dcccdfeb0927f3486aada8d85f8157ff51c3
 "Charli3 Pull Oracle Client": 4f90fa3b1d41d6251ff3de246606b1abacc9cda1
 "Charli3 Pull Oracle Contracts": b5e1ecdefc6e3aae324d59898884bcab7d6e0335
 "Charli3 Pull Oracle SDK": acc01827e66c04b7f83c801a4e63603d6e641dea
@@ -53,8 +53,8 @@
 "Developer Portal": 0cb4985d3f7a6a2f5b81de56d463a56e6e7352c0
 "Dingo": a0e82d486e31b3753fde5a6525c8b4fd8eacc512
 "Dolos": f966d99f4f92af5660923680865accef8dcef7a9
-"Evolution SDK": 6ebf839334130c3640502d1d403d96983c1ef44e
-"Evolution SDK Packages": 6ebf839334130c3640502d1d403d96983c1ef44e
+"Evolution SDK": 34a2d15de18ec22bcc0ff8585f028f1b5797ffb7
+"Evolution SDK Packages": 34a2d15de18ec22bcc0ff8585f028f1b5797ffb7
 "GovTool": fb2305867737bedc489560ca61745489ca1ac0c3
 "Helios": 7364d795562b96d14b1e177b28c103eb240d0f54
 "Hydra": 32a709b108815307a5dcec9f1d4aa39b80f81f1a
@@ -74,17 +74,17 @@
 "Plinth": e25e3234130e3a29f4d7c572ac47fa49978b2d14
 "Plutarch": 87e11994c45b6af4768e5b6146d9c94879e279b5
 "PyCardano": 877be3ad9a2221fce7eac777c9927430cbc3b868
-"Pyth Lazer Cardano": 807ff575a9090cee99b9e1a30dc23edf3522fe1b
+"Pyth Lazer Cardano": 2bb0eb54b2b3af8854d0c26f3884c28a0fce0802
 "SanchoNet": b4ece78e1552ba4e61426fb4fa53aead0e18da4a
 "Scalus": 073969c753f26fe7c27d13b502e7240b68459d06
 "Smart Contract Vulnerabilities": 0fe98a6fc0c08ea6b21361f2d46c5e6a0cd1922a
 "Tx3": 4e0e4cf09084a3d17dc71744d0d4db896b91e4d2
-"UTxORPC Go SDK": 67280b7d0314a0f2e6f95c8075f599a3b7f77c40
+"UTxORPC Go SDK": 6527e965734806ce18908c10ece0bb8d6b254ab1
 "Yaci DevKit": bafb9d83471a9e3f1afcc4a530b35dd308b731da
 "Yaci Store": ea350c0800cf11f899a7d1808a82bc089dad2e75
 "blockfrost-go": 7c2f324c451977a542722ebcb6ec1c70f3d26b1e
-"cardano-client-lib": c2fe53e51a0f8e289e106a834273c40379a01863
-"cardano-js-sdk": 1a08af20cba29de7798cc96f76e707796b92607b
+"cardano-client-lib": 45906b783973b4c44ac6883253af26bdd07bc1b4
+"cardano-js-sdk": 48019e49c826ea77d81be0e2d2907f94406f5e04
 "gOuroboros": dc3fcf1d0a1222c362187602c53fc29007545d18
-"haskell.nix": 86b5ca02e422c728d8f2687e6c3153680fbf402a
-"iohk-nix": af463a46dbe9c6e2db6b2639c0f35f5689e0c3a8
+"haskell.nix": aa3159251925c75ec4f7fabb4912fa2d7a3cad66
+"iohk-nix": 84287dbfebbfb5d36498c9c816e54252927c13c5
