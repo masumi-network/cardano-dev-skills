@@ -17,7 +17,6 @@
 
 [![][ci-build-and-test-badge]][ci-build-and-test]
 [![][ci-coding-practices-badge]][ci-coding-practices]
-[![][nightly-synchronization-badge]][nightly-synchronization]
 [![][nightly-tool-integrations-badge]][nightly-tool-integrations]
 [![][nightly-uplc-benchmarks-badge]][nightly-uplc-benchmarks]
 
@@ -40,7 +39,7 @@ Windows). The archives come with shell completions scripts.
 See either:
 
 - [latest releases](https://github.com/pragma-org/amaru/releases);
-- [nightly builds](https://pragma-org.github.io/amaru/).
+- [nightly builds](https://nightly.amaru.global/).
 
 Alternatively, Amaru also comes pre-packaged for a few platforms.
 
@@ -48,7 +47,7 @@ Alternatively, Amaru also comes pre-packaged for a few platforms.
 #### <img src="https://raw.githubusercontent.com/pragma-org/amaru/refs/heads/main/.github/icons/docker.svg" height=18 /> Docker Image
 
 ```console
-docker pull ghcr.io/pragma-org/amaru:v10.11.20260912
+docker pull ghcr.io/pragma-org/amaru:v10.11.20260925
 ```
 
 > [!IMPORTANT]
@@ -70,8 +69,8 @@ nix profile install --no-write-lock-file github:pragma-org/amaru#amaru
 #### <img src="https://raw.githubusercontent.com/pragma-org/amaru/refs/heads/main/.github/icons/debian.webp" height=18 /> Debian
 
 ```console
-VERSION=10.11.20260912 ARCH=x86_64; curl -fsSL -o amaru-$VERSION-linux-$ARCH.deb "https://github.com/pragma-org/amaru/releases/download/v$VERSION/amaru-$VERSION-linux-$ARCH.deb"
-VERSION=10.11.20260912 ARCH=x86_64; sudo apt install ./amaru-$VERSION-linux-$ARCH.deb
+VERSION=10.11.20260925 ARCH=x86_64; curl -fsSL -o amaru-$VERSION-linux-$ARCH.deb "https://github.com/pragma-org/amaru/releases/download/v$VERSION/amaru-$VERSION-linux-$ARCH.deb"
+VERSION=10.11.20260925 ARCH=x86_64; sudo apt install ./amaru-$VERSION-linux-$ARCH.deb
 ```
 
 Also available for `ARCH=aarch64`.
@@ -80,8 +79,8 @@ The Debian package installs a systemd unit and reads overrides from `/etc/defaul
 #### <img src="https://raw.githubusercontent.com/pragma-org/amaru/refs/heads/main/.github/icons/red-hat.webp" height=18 /> RPM
 
 ```console
-VERSION=10.11.20260912 ARCH=x86_64; curl -fsSL -o amaru-$VERSION-linux-$ARCH.rpm "https://github.com/pragma-org/amaru/releases/download/v$VERSION/amaru-$VERSION-linux-$ARCH.rpm"
-VERSION=10.11.20260912 ARCH=x86_64; sudo dnf install ./amaru-$VERSION-linux-$ARCH.rpm
+VERSION=10.11.20260925 ARCH=x86_64; curl -fsSL -o amaru-$VERSION-linux-$ARCH.rpm "https://github.com/pragma-org/amaru/releases/download/v$VERSION/amaru-$VERSION-linux-$ARCH.rpm"
+VERSION=10.11.20260925 ARCH=x86_64; sudo dnf install ./amaru-$VERSION-linux-$ARCH.rpm
 ```
 
 Also available for `ARCH=aarch64`.
@@ -146,9 +145,6 @@ See [monitoring/README.md](./monitoring/README.md).
 
 [ci-coding-practices-badge]: https://img.shields.io/github/actions/workflow/status/pragma-org/amaru/ci-coding-practices.yml?style=flat-square&logo=thestorygraph&logoColor=%23ffffff&label=
 [ci-coding-practices]: https://github.com/pragma-org/amaru/actions/workflows/ci-coding-practices.yml
-
-[nightly-synchronization-badge]: https://img.shields.io/github/actions/workflow/status/pragma-org/amaru/nightly-synchronization.yml?style=flat-square&logo=cardano&logoColor=%23ffffff&label=
-[nightly-synchronization]: https://github.com/pragma-org/amaru/actions/workflows/nightly-synchronization.yml
 
 [nightly-tool-integrations-badge]: https://img.shields.io/github/actions/workflow/status/pragma-org/amaru/nightly-tool-integrations.yml?style=flat-square&logo=applearcade&logoColor=%23ffffff&label=
 [nightly-tool-integrations]: https://github.com/pragma-org/amaru/actions/workflows/nightly-tool-integrations.yml
