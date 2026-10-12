@@ -25,7 +25,7 @@ Hydra node assumes that the blueprint transaction does not contain any stake poo
 :::warning Deposit restrictions
 The `/commit` endpoint enforces the following restrictions:
 - **Byron addresses are rejected.** UTxOs held at Byron-era addresses cannot be deposited.
-- **Minimum ADA.** Each deposited output must meet the minimum ADA requirement for its size.
+- **Minimum ADA.** The deposited outputs are locked in a single deposit output whose inline datum embeds a copy of each of them, so that output needs more ADA than the deposited outputs would on their own. A UTxO holding a native token at its own minimum ADA is a typical case that falls short. The deposited value must cover the minimum ADA of this deposit output; otherwise the request fails with a `DepositTooLow` error (HTTP 400) reporting `providedValue`, the lovelace you deposit, and `minimumValue`, the lovelace the deposit output requires. To retry, deposit the same assets with at least the difference more lovelace: either create a new UTxO holding the tokens plus the extra ADA, or use a blueprint transaction whose deposited output carries the extra ADA taken from your other inputs. Adding further UTxOs to the same deposit also works, but each one enlarges the datum and so raises the required minimum a little beyond the reported difference.
 - **Output value is capped at input value.** When using a blueprint transaction, the value deposited into the head is taken directly from what you provide in the `utxo` field. If the blueprint outputs request more value than the inputs supply, any excess is silently capped to zero on the change output — you will never receive more on L2 than what you deposited on L1.
 - **Deposits too large to claim are rejected.** A deposit is only accepted if the increment transaction claiming it would stay within layer 1 ledger limits: the merged head output value must fit within the maximum serialized value size (5000 bytes on mainnet) and the increment transaction within the maximum transaction size. Deposits carrying tokens under many distinct policy ids hit the value size limit first; such a request fails with a `DepositTooLarge` error (HTTP 400). Without this check the deposit transaction itself would succeed, but the funds could never be claimed into the head and would remain locked until recovered after the deadline.
 :::
@@ -286,6 +286,19 @@ The last option is most flexible one for dApp builders since they can just speci
 </details>
 
 This will result in a deposit being detected by the `hydra-node` and consequently the funds to be deposited to the Head.
+
+A deposit remains pending while any of its output references (transaction id and output index) collide with an output the head holds or a transaction in the proposed snapshot creates. It can be selected after the conflicting output has been spent in a confirmed snapshot; if it remains unclaimed, it can be recovered after its deadline. Layer 2 transactions, including decommits, are also rejected if they create an output reference already held by the head.
+
+:::info Deposited funds are spendable only after the increment settles
+A deposit is not part of the head's layer 2 ledger the moment its snapshot is
+confirmed. It is carried as a *pending commit* until the `IncrementTx` claiming
+it is observed on-chain, and only then does it enter the spendable UTxO set —
+signalled by `CommitFinalized`. Submitting a transaction that spends the
+deposited outputs before that point leaves it pending until it either becomes
+applicable or times out as invalid; a snapshot request listing such a
+transaction is rejected outright and never signed. Wait for `CommitFinalized`
+before building transactions that spend the deposited outputs.
+:::
 
 :::warning Reference scripts are not preserved
 If a deposited UTxO has an inline reference script attached, **that reference script will not be available in L2**. The deposit datum encodes UTxOs using the Plutus `TxOut` representation, which has no reference script field. The address, value and datum of the deposited UTxO are preserved faithfully, but the reference script is silently dropped. If your use case depends on reference scripts being available inside the Head, they must be published separately on L2.
