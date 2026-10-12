@@ -52,9 +52,7 @@ func (n *Node) chainsyncObservePeerTip(
 	n.chainSelector.HandlePeerTipUpdateEvent(
 		event.NewEvent(chainselection.PeerTipUpdateEventType, e),
 	)
-	if n.peerGov != nil {
-		n.peerGov.TouchPeerByConnId(e.ConnectionId)
-	}
+	n.touchPeerByConnId(e.ConnectionId)
 	return true
 }
 
@@ -65,7 +63,7 @@ func (n *Node) chainsyncObservePeerTip(
 // peer's observed frontier (ApplyRollback), which can change its corroboration
 // status; delivering that observation asynchronously would let the apply gate
 // read pre-trim state and forward a rollback for a peer that the rollback has
-// just made uncorroborated (issue #2928). It returns true when handled
+// just made uncorroborated. It returns true when handled
 // synchronously, so the ouroboros layer skips the async PeerRollbackEvent
 // publish to avoid a double update. Unlike chainsyncObservePeerTip there is no
 // peergov touch: only the chain selector subscribes to PeerRollbackEvent.
@@ -101,11 +99,16 @@ func (n *Node) chainsyncApplyEligible(
 	return n.chainSelector.ShouldApplyIngress(connId)
 }
 
+// chainsyncHasBestPeer reports whether chain selection has a best peer.
+func (n *Node) chainsyncHasBestPeer() bool {
+	return n.chainSelector != nil && n.chainSelector.GetBestPeer() != nil
+}
+
 func (n *Node) isChainsyncIngressEligible(
 	connId ouroboros.ConnectionId,
 ) bool {
-	if n.peerGov != nil {
-		return n.peerGov.IsChainSelectionEligible(connId)
+	if eligible, ok := n.peerChainSelectionEligible(connId); ok {
+		return eligible
 	}
 	n.chainsyncIngressEligibilityMu.RLock()
 	defer n.chainsyncIngressEligibilityMu.RUnlock()
@@ -117,6 +120,17 @@ func (n *Node) isChainsyncIngressEligible(
 		return false
 	}
 	return eligible
+}
+
+func (n *Node) peerChainSelectionEligible(
+	connId ouroboros.ConnectionId,
+) (bool, bool) {
+	n.peerGovMu.RLock()
+	defer n.peerGovMu.RUnlock()
+	if n.peerGov == nil {
+		return false, false
+	}
+	return n.peerGov.IsChainSelectionEligible(connId), true
 }
 
 func (n *Node) setChainsyncIngressEligibility(
@@ -256,6 +270,7 @@ func (n *Node) handleChainSelectedNoneEventLocked(
 		"previous_connection", prevConn,
 		"genesis_corroboration", e.GenesisCorroboration,
 	)
+	n.recordChainSelectionStall(e.GenesisCorroboration)
 	if n.chainSelector == nil {
 		// Direct callers without a selector cannot perform the current-selection
 		// recheck above, so retain the event's compare-and-clear behavior.
@@ -471,26 +486,38 @@ func (n *Node) startChainsyncStallRecycler(
 	chainsyncCfg chainsync.Config,
 ) error {
 	n.chainsyncStallRecycler = chainsyncrecycler.New(
-		chainsyncrecycler.Config{
-			Components:   n.recyclerComponents(),
-			EventBus:     n.eventBus,
-			Logger:       n.config.logger,
-			StallTimeout: chainsyncCfg.StallTimeout,
-			Interval: min(
-				max(chainsyncCfg.StallTimeout/2, 10*time.Second),
-				30*time.Second,
-			),
-			Grace:    max(chainsyncCfg.StallTimeout, 30*time.Second),
-			Cooldown: max(2*chainsyncCfg.StallTimeout, 2*time.Minute),
-		},
+		n.buildChainsyncRecyclerConfig(chainsyncCfg),
 	)
 	return n.chainsyncStallRecycler.Start(ctx)
 }
 
+// buildChainsyncRecyclerConfig assembles the recycler's configuration, the
+// single composition site for its dependencies and hooks.
+func (n *Node) buildChainsyncRecyclerConfig(
+	chainsyncCfg chainsync.Config,
+) chainsyncrecycler.Config {
+	return chainsyncrecycler.Config{
+		Components:   n.recyclerComponents(),
+		EventBus:     n.eventBus,
+		Logger:       n.config.logger,
+		StallTimeout: chainsyncCfg.StallTimeout,
+		Interval: min(
+			max(chainsyncCfg.StallTimeout/2, 10*time.Second),
+			30*time.Second,
+		),
+		Grace:             max(chainsyncCfg.StallTimeout, 30*time.Second),
+		Cooldown:          max(2*chainsyncCfg.StallTimeout, 2*time.Minute),
+		OnPlateauDecision: n.recordPlateauDecision,
+	}
+}
+
 // waitChainsyncStallRecycler stops the recycler and waits for it to exit.
 //
-// This wait is intentionally not bounded by the shutdown timeout: advancing
-// while the recycler is still active can race dependency teardown.
+// The wait itself is unbounded: advancing while the recycler is still active
+// can race dependency teardown. shutdown() bounds it from outside with
+// stopWithDeadline, which is safe only because the recycler reaches node
+// components solely through WithLiveComponents, whose TryLock on
+// liveLifecycleMu fails while shutdown holds that lock.
 func (n *Node) waitChainsyncStallRecycler() {
 	if n.chainsyncStallRecycler == nil {
 		return
