@@ -48,6 +48,7 @@ import (
 	"github.com/blinklabs-io/gouroboros/protocol/localtxmonitor"
 	"github.com/blinklabs-io/gouroboros/protocol/localtxsubmission"
 	"github.com/blinklabs-io/gouroboros/protocol/peersharing"
+	"github.com/blinklabs-io/gouroboros/protocol/perasvotes"
 	"github.com/blinklabs-io/gouroboros/protocol/txsubmission"
 )
 
@@ -102,6 +103,8 @@ type Connection struct {
 	leiosNotifyConfig       *leiosnotify.Config
 	leiosVotes              *leiosvotes.LeiosVotes
 	leiosVotesConfig        *leiosvotes.Config
+	perasVotes              *perasvotes.PerasVotes
+	perasVotesConfig        *perasvotes.Config
 	localStateQuery         *localstatequery.LocalStateQuery
 	localStateQueryConfig   *localstatequery.Config
 	localTxMonitor          *localtxmonitor.LocalTxMonitor
@@ -138,6 +141,9 @@ func NewConnection(options ...ConnectionOptionFunc) (*Connection, error) {
 	for _, option := range options {
 		option(c)
 	}
+	if err := c.synchronizeByronSlotsPerEpoch(); err != nil {
+		return nil, err
+	}
 	if c.errorChan == nil {
 		c.errorChan = make(chan error, 10)
 		c.ownsErrorChan = true
@@ -148,6 +154,45 @@ func NewConnection(options ...ConnectionOptionFunc) (*Connection, error) {
 		}
 	}
 	return c, nil
+}
+
+func (c *Connection) synchronizeByronSlotsPerEpoch() error {
+	var blockFetchSlots, chainSyncSlots uint64
+	if c.blockFetchConfig != nil {
+		blockFetchSlots = c.blockFetchConfig.ByronSlotsPerEpoch
+	}
+	if c.chainSyncConfig != nil {
+		chainSyncSlots = c.chainSyncConfig.ByronSlotsPerEpoch
+	}
+	if blockFetchSlots != 0 && chainSyncSlots != 0 &&
+		blockFetchSlots != chainSyncSlots {
+		return fmt.Errorf(
+			"conflicting Byron slots per epoch: BlockFetch=%d ChainSync=%d",
+			blockFetchSlots,
+			chainSyncSlots,
+		)
+	}
+	slotsPerEpoch := blockFetchSlots
+	if slotsPerEpoch == 0 {
+		slotsPerEpoch = chainSyncSlots
+	}
+	if slotsPerEpoch == 0 {
+		return nil
+	}
+	if c.blockFetchConfig == nil {
+		config, err := blockfetch.NewConfig()
+		if err != nil {
+			return fmt.Errorf("create BlockFetch config: %w", err)
+		}
+		c.blockFetchConfig = &config
+	}
+	if c.chainSyncConfig == nil {
+		config := chainsync.NewConfig()
+		c.chainSyncConfig = &config
+	}
+	c.blockFetchConfig.ByronSlotsPerEpoch = slotsPerEpoch
+	c.chainSyncConfig.ByronSlotsPerEpoch = slotsPerEpoch
+	return nil
 }
 
 // New is an alias to NewConnection for backward compatibility
@@ -245,19 +290,27 @@ func (c *Connection) KeepAlive() *keepalive.KeepAlive {
 	return c.keepAlive
 }
 
-// LeiosFetch returns the leios-fetch protocol handler
+// LeiosFetch returns the configured LeiosFetch protocol handler, or nil when
+// LeiosFetch was not enabled with WithLeiosFetchConfig.
 func (c *Connection) LeiosFetch() *leiosfetch.LeiosFetch {
 	return c.leiosFetch
 }
 
-// LeiosNotify returns the leios-notify protocol handler
+// LeiosNotify returns the configured LeiosNotify protocol handler, or nil when
+// LeiosNotify was not enabled with WithLeiosNotifyConfig.
 func (c *Connection) LeiosNotify() *leiosnotify.LeiosNotify {
 	return c.leiosNotify
 }
 
-// LeiosVotes returns the leios-votes protocol handler
+// LeiosVotes returns the configured LeiosVotes protocol handler, or nil when
+// LeiosVotes was not enabled with WithLeiosVotesConfig.
 func (c *Connection) LeiosVotes() *leiosvotes.LeiosVotes {
 	return c.leiosVotes
+}
+
+// PerasVotes returns the Peras vote-diffusion protocol handler, when enabled.
+func (c *Connection) PerasVotes() *perasvotes.PerasVotes {
+	return c.perasVotes
 }
 
 // LocalStateQuery returns the local-state-query protocol handler
@@ -448,6 +501,14 @@ func (c *Connection) allProtocolsIdle() bool {
 			protocols = append(protocols, c.leiosVotes.Server.ProtocolInstance())
 		}
 	}
+	if c.perasVotes != nil {
+		if c.perasVotes.Client != nil {
+			protocols = append(protocols, c.perasVotes.Client.Protocol)
+		}
+		if c.perasVotes.Server != nil {
+			protocols = append(protocols, c.perasVotes.Server.Protocol)
+		}
+	}
 	if c.localMessageSubmission != nil {
 		if c.localMessageSubmission.Client != nil {
 			protocols = append(protocols, c.localMessageSubmission.Client.Protocol)
@@ -570,12 +631,13 @@ func (c *Connection) setupConnection() error {
 			c.queryMode,
 		)
 	} else {
-		protoVersions = protocol.GetProtocolVersionMap(
+		protoVersions = protocol.GetProtocolVersionMapWithPerasSupport(
 			protoOptions.Mode,
 			c.networkMagic,
 			handshakeDiffusionMode,
 			c.peerSharingEnabled,
 			c.queryMode,
+			c.perasVotesConfig != nil,
 		)
 	}
 	// Perform handshake
@@ -584,6 +646,16 @@ func (c *Connection) setupConnection() error {
 		handshake.WithProtocolVersionMap(protoVersions),
 		handshake.WithFinishedFunc(
 			func(ctx handshake.CallbackContext, version uint16, versionData protocol.VersionData) error {
+				// Only a query reply finishes without a negotiated version,
+				// and mini-protocols are not started in query mode.
+				knownVersion := protocol.GetProtocolVersion(version).
+					NewVersionDataFromCborFunc != nil
+				if !c.queryMode && (!knownVersion || versionData == nil) {
+					return fmt.Errorf(
+						"handshake finished without an accepted version: %d",
+						version,
+					)
+				}
 				c.handshakeVersion = version
 				c.handshakeVersionData = versionData
 				if c.useNodeToNodeProto && versionData != nil {
@@ -677,9 +749,22 @@ func (c *Connection) setupConnection() error {
 				!c.handshakeVersionData.PeerSharing()
 			c.peerSharing = peersharing.New(protoOptions, &psCfg)
 		}
-		c.leiosNotify = leiosnotify.New(protoOptions, c.leiosNotifyConfig)
-		c.leiosFetch = leiosfetch.New(protoOptions, c.leiosFetchConfig)
-		c.leiosVotes = leiosvotes.New(protoOptions, c.leiosVotesConfig)
+		if c.leiosNotifyConfig != nil {
+			c.leiosNotify = leiosnotify.New(protoOptions, c.leiosNotifyConfig)
+		}
+		if c.leiosFetchConfig != nil {
+			c.leiosFetch = leiosfetch.New(protoOptions, c.leiosFetchConfig)
+		}
+		if c.leiosVotesConfig != nil {
+			c.leiosVotes = leiosvotes.New(protoOptions, c.leiosVotesConfig)
+		}
+		if c.perasVotesConfig != nil {
+			if versionData, ok := c.handshakeVersionData.(interface {
+				PerasSupported() bool
+			}); ok && versionData.PerasSupported() {
+				c.perasVotes = perasvotes.New(protoOptions, c.perasVotesConfig)
+			}
+		}
 		c.protocolsReady = true
 		c.protocolMu.Unlock()
 		// Register server protocols early to avoid race conditions where messages arrive
@@ -693,9 +778,18 @@ func (c *Connection) setupConnection() error {
 			if c.peerSharing != nil {
 				c.peerSharing.Server.EnsureRegistered()
 			}
-			c.leiosNotify.Server.EnsureRegistered()
-			c.leiosFetch.Server.EnsureRegistered()
-			c.leiosVotes.Server.EnsureRegistered()
+			if c.leiosNotify != nil {
+				c.leiosNotify.Server.EnsureRegistered()
+			}
+			if c.leiosFetch != nil {
+				c.leiosFetch.Server.EnsureRegistered()
+			}
+			if c.leiosVotes != nil {
+				c.leiosVotes.Server.EnsureRegistered()
+			}
+			if c.perasVotes != nil {
+				c.perasVotes.Server.EnsureRegistered()
+			}
 		}
 		// Start protocols
 		if !c.delayProtocolStart {
@@ -709,9 +803,18 @@ func (c *Connection) setupConnection() error {
 				if c.peerSharing != nil {
 					c.peerSharing.Client.Start()
 				}
-				c.leiosNotify.Client.Start()
-				c.leiosFetch.Client.Start()
-				c.leiosVotes.Client.Start()
+				if c.leiosNotify != nil {
+					c.leiosNotify.Client.Start()
+				}
+				if c.leiosFetch != nil {
+					c.leiosFetch.Client.Start()
+				}
+				if c.leiosVotes != nil {
+					c.leiosVotes.Client.Start()
+				}
+				if c.perasVotes != nil {
+					c.perasVotes.Client.Start()
+				}
 			}
 			if (c.fullDuplex && handshakeFullDuplex) || c.server {
 				c.blockFetch.Server.Start()
@@ -723,9 +826,18 @@ func (c *Connection) setupConnection() error {
 				if c.peerSharing != nil {
 					c.peerSharing.Server.Start()
 				}
-				c.leiosNotify.Server.Start()
-				c.leiosFetch.Server.Start()
-				c.leiosVotes.Server.Start()
+				if c.leiosNotify != nil {
+					c.leiosNotify.Server.Start()
+				}
+				if c.leiosFetch != nil {
+					c.leiosFetch.Server.Start()
+				}
+				if c.leiosVotes != nil {
+					c.leiosVotes.Server.Start()
+				}
+				if c.perasVotes != nil {
+					c.perasVotes.Server.Start()
+				}
 			}
 		}
 	} else if c.useDMQProtocol {
