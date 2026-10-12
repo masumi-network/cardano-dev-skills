@@ -11,7 +11,7 @@ This is the process for storing Mithril Protocol Configuration markers on the Ca
 - A Cardano node running locally on the network you are targeting
 - A running Mithril Aggregator node
 - The protocol configuration activation marker Cardano payment keypairs of your Mithril network
-- The protocol configuration secret key of your Mithril network
+- The protocol configuration secret key of your Mithril network (you can generate one by running the aggregator command `tools generate-keypair ed25519 --target-path <KEYPAIR_DIRECTORY>` if none exists for the target environment)
 
 ## Setup
 
@@ -130,6 +130,12 @@ Manually edit previously exported JSON file written at `$ASSETS_PATH/protocol-co
 
 > [!IMPORTANT]
 > :fire: Make sure to keep, if it exists, at least the three last epoch's configuration without any modification.
+
+> [!IMPORTANT]
+> For the `Snark` and `IvcSnark` aggregate signature types, changing `k` or `m` changes the
+> certificate circuit verification key digest: whitelist the new digest in the circuit verification
+> key registry and publish it before the first epoch certified with the new parameters, following
+> the [circuit-key-registry](../circuit-key-registry/README.md) runbook.
 
 #### Generate Tx Datum payload file
 
