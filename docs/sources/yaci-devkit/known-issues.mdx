@@ -6,41 +6,44 @@ This page documents known issues, workarounds, and frequently asked questions ab
 
 ## Known Issues
 
-### PV11 Ogmios/Kupo Docker arm64 Compatibility
+### Ogmios / Kupo Platform Availability
 
-<Callout type="warning">
-**Issue**: PV11-compatible (Cardano node 11.0.1) Ogmios `v6.14.0.2` and Kupo `v2.11.0.1` are currently published by IntersectMBO only as Linux x86_64 binaries.
+<Callout type="info">
+Ogmios `v7.0.0` and Kupo `v2.12.0` are published for Linux (x86_64, arm64) and macOS arm64 only.
 </Callout>
 
 #### Current Behavior
 
-The DevKit Docker image bundles those x86_64 Ogmios/Kupo binaries in both the `linux/amd64` and `linux/arm64` images as a temporary workaround.
-
-- **Linux x86_64 Docker hosts**: Supported.
-- **Apple Silicon Docker Desktop**: Expected to work through Docker Desktop's x86_64 emulation.
-- **Native Linux arm64 Docker hosts**: May fail at runtime unless x86_64 binfmt/qemu emulation is configured on the host.
-- **Native CLI on macOS arm64**: The default PV11 Ogmios/Kupo Linux x86_64 binaries cannot run directly. Use Docker, or set custom `ogmios.url` / `kupo.url` values when compatible native binaries are available.
+- **Docker (linux/amd64 and linux/arm64)**: Fully supported. Both images bundle **native**, statically linked binaries — no emulation required.
+- **Native CLI on Linux (x86_64 and arm64)**: Both supported.
+- **Native CLI on macOS arm64**: Both supported. The macOS builds link only against system libraries and run standalone.
+- **Native CLI on macOS x86_64 / Windows**: Neither component is published. `download -c ogmios` fails fast with an explanatory message instead of attempting a 404 download.
 
 #### Workaround
 
-On native Linux arm64 hosts, run the DevKit Docker image as `linux/amd64` or configure x86_64 emulation. For native CLI installs, use a compatible Ogmios/Kupo build when one becomes available by setting direct URLs in `config/download.properties`.
+On an unsupported platform, use the DevKit Docker image, or set a custom `ogmios.url` / `kupo.url` in `config/download.properties`.
+
+When Ogmios is unavailable, Yaci Store automatically falls back to the embedded `scalus` transaction evaluator, so transaction evaluation keeps working.
 
 ---
 
-### Yaci Store Tx Evaluator Mode (v0.12.0-beta5+)
+### Yaci Store Tx Evaluator Mode
 
 <Callout type="info">
-Starting with Yaci DevKit `v0.12.0-beta5`, Yaci Store uses the `scalus` transaction evaluator by default.
+Yaci Store uses the `ogmios` transaction evaluator by default in the Docker distribution, and falls back to the embedded `scalus` evaluator when Ogmios is unavailable.
 </Callout>
 
-Default Yaci Store transaction evaluation no longer requires Ogmios. If Ogmios is enabled and running when Yaci Store starts, DevKit automatically switches the evaluator mode to `ogmios`.
+DevKit selects the evaluator at devnet start:
 
-This means the temporary PV11 Ogmios/Kupo binary limitations do not block the default Yaci Store transaction evaluation path.
+- If Ogmios is enabled **and** responds on its health endpoint, the mode is `ogmios`.
+- Otherwise DevKit logs a warning and uses `scalus`. No transaction evaluation is lost either way.
+
+To force the Scalus evaluator, set `ogmios_enabled=false` in `config/env` (Docker) or `ogmios.enabled=false` in `config/application.properties` (zip distribution).
 
 Check the active mode in the Yaci CLI startup output:
 
 ```text
-Yaci Store tx evaluator mode: scalus
+Yaci Store tx evaluator mode: ogmios
 ```
 
 ---
@@ -98,6 +101,37 @@ If you need to use **Plutus V2** with Lucid Evolution or other off-chain SDKs, e
 #### More Information
 
 For technical details about this issue, see: [GitHub Issue #65](https://github.com/bloxbean/yaci-devkit/issues/65#issuecomment-2318155838)
+
+---
+
+### Devnet node does not start while another cardano-node runs
+
+Applies to the zip, npm, Homebrew and native/JAR distributions. Docker is not affected: the devnet node runs in the container's own network, and its Prometheus port is not published to the host.
+
+#### Current Behavior
+
+`create-node --start`, `start` or `yaci-devkit up` stops with:
+
+```
+Prometheus Port 12798 is not available. The devnet node needs it; another cardano-node on this machine (e.g. a mainnet node) may be using it.
+```
+
+#### Root Cause
+
+The devnet's cardano-node serves Prometheus metrics on port 12798, the same default a mainnet or testnet cardano-node uses. cardano-node exits at startup when it cannot open that port.
+
+#### Workaround
+
+Stop the other node, or give the devnet a free port. The port is written into the devnet when it is created, so re-create the devnet (`-o`) after changing it.
+
+| Distribution | Once | Every time |
+|---|---|---|
+| Zip / native binary | `create-node -o --prometheus-port 12799` | `prometheus.port=12799` in `config/application.properties`, or `./yaci-cli -Dprometheus.port=12799` |
+| JAR | `create-node -o --prometheus-port 12799` | `java -Dprometheus.port=12799 -jar yaci-cli.jar` |
+| NPM / Homebrew | `yaci-devkit up --prometheus-port 12799` | `PROMETHEUS_PORT=12799 yaci-devkit up` |
+| Zip / NPM / Homebrew (v0.12.0+) | | `prometheus.port=12799` in `$HOME/.yaci-cli/devkit.properties` (see [User Settings](/user-settings)) |
+
+The `PROMETHEUS_PORT=12799` environment variable works with every distribution. Use one of the "Every time" forms if you also create devnets through the admin API or Yaci Viewer, which use the `prometheus.port` property.
 
 ---
 
