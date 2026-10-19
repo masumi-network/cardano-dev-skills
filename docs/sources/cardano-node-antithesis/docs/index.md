@@ -24,9 +24,10 @@ Docker containers that set up and drive the Antithesis test environment. Dependi
 
 ## Testnets
 
-Currently we provide and maintain one testnet configuration. Some old testnets are preserved in the [old-broken](https://github.com/cardano-foundation/cardano-node-antithesis/tree/main/old-broken) directory for historical reference.
+Currently we provide and maintain these testnet configurations. Some old testnets are preserved in the [old-broken](https://github.com/cardano-foundation/cardano-node-antithesis/tree/main/old-broken) directory for historical reference.
 
-- `cardano_node_master/`: A mixed-version testnet with 4 block producers (10.5.3, 10.6.2, 10.7.1, 11.0.1), 3 relay nodes (10.6.2, 10.7.1, 11.0.1), tracer observability, Asteria Plutus workload pressure, and tx-generator ADA-transfer pressure. See [cardano-node-master](testnets/cardano-node-master.md) for details.
+- `cardano-node-releases/`: A mixed-version testnet with 4 block producers (11.1.3, 10.6.2, 10.7.1, 11.0.1), 3 relay nodes (10.6.2, 10.7.1, 11.0.1), tracer observability, Asteria Plutus workload pressure, and tx-generator ADA-transfer pressure. See [cardano-node-releases](testnets/cardano-node-releases.md) for details.
+- `cardano-node-releases-fast/`: The same cluster with a fast genesis (k = 200, f = 0.2, 0.5 s slots, 5000 s epochs), so a run crosses epoch boundaries. See [fast variant](testnets/cardano-node-releases.md#fast-variant).
 
 ## Image publishing
 

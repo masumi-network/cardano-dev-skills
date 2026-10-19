@@ -58,12 +58,50 @@ the scheduled job uploads that file on every outcome, so a broken precondition
 leaves the day, stage, `outcome=FAILED`, and a specific error behind even when
 the transport cannot publish its issue receipt.
 
+## Consumer App identity
+
+The consumer branch push and pull request are created with an installation
+token of the same App, minted by the transport at the moment of the write —
+never at job start, because the token lives one hour and the bootstrap wait
+before the write may outlast it. It is scoped to repository
+`cardano-node-antithesis` alone, with exactly three permissions: contents write,
+pull requests write, metadata read. Pull request events authored with the
+workflow's own token wait for manual approval and run no checks, so only an App
+token lets the seven consumer checks run unattended. The mint signs a five
+minute App JWT with `openssl`, asks `GET /repos/<repository>/installation` for
+the installation and `POST /app/installations/<id>/access_tokens` for the token.
+The private key is read through a descriptor, the JWT travels in an
+`Authorization: Bearer` header read by `curl` from a descriptor, and the token
+only in `GH_TOKEN`; none appears in argv, logs, receipts or git remotes. There
+is no fallback: the workflow token never stands in for it.
+
+Absent App credentials fail at `stage=consumer-identity` with
+`error=missing-consumer-credentials-<names>` before any claim or effect. A mint
+that fails at the write boundary names its step (`app-credentials-absent`,
+`jwt-signing`, `installation-lookup`, `token-request`) and stops before any
+consumer effect.
+
+## Consumer check observation
+
+A freshly created consumer pull request starts with no checks, then queued and
+running ones. `require-consumer-checks` therefore observes the exact candidate
+head until every required check is uniquely successful, polling every
+`DAILY_AMARU_CONSUMER_CHECK_POLL_SECONDS` (default 30) up to an absolute
+ceiling `DAILY_AMARU_CONSUMER_CHECK_MAX_SECONDS` (default 2700; with the 7200
+second bootstrap ceiling this fits the 360 minute job). Absence and pending
+states are waited out; a terminal non-success, a skipped required job, a
+duplicate success, a run awaiting approval (`action_required`) or a transport
+error fails at once, and rows for any other head never count. At the ceiling the
+failure names the check, the poll count and the checks actually observed
+(`still-running` or `never-reported`).
+
 ## Operator setup gate
 
-Creating the App, installing it on `lambdasistemi/amaru-bootstrap`, approving
+Creating the App, installing it on `lambdasistemi/amaru-bootstrap` and on
+`cardano-foundation/cardano-node-antithesis`, approving
 its permissions, and placing the variable and secret are operator actions
 outside this repository. Until they are done the scheduled run is expected to
-fail at `stage=identity`; that is the contract working, not a regression. No
+fail at `stage=identity` or `stage=consumer-identity`; that is the contract working, not a regression. No
 secret value is recorded anywhere in this repository.
 
 ## Decision and durable guards
@@ -76,7 +114,7 @@ any cross-repository mutation. Duplicate days, attempted SHAs, malformed or
 ambiguous observations, and every failed stage retain an honest `FAILED`
 receipt.
 
-An open consumer repin is the one expected non-launch outcome on the changed
+A repin still open at the integration read is the one expected non-launch outcome on the changed
 path. It records `stage=complete`, `outcome=AWAITING`, and
 `run_outcome=awaiting-integration`, exits zero, and prints
 `AWAITING <day> <upstream-sha> <consumer-pr-url>`. This classification applies
@@ -98,16 +136,28 @@ The provisional transport:
 
 1. proposes only the stock Amaru lock update in
    `lambdasistemi/amaru-bootstrap`;
-2. waits for named checks on that exact candidate and resolves its full SHA
-   image tag to a lowercase registry digest;
-3. atomically repins every discovered `cardano_amaru` producer reference;
+2. waits for named checks on that exact candidate, then resolves its full SHA
+   image tag to a lowercase registry digest; the image is pushed by a separate
+   workflow that starts when those checks finish, so the resolution waits for
+   the tag up to `DAILY_AMARU_IMAGE_WAIT_SECONDS` (default 600) at
+   `DAILY_AMARU_IMAGE_POLL_SECONDS` (default 15) and fails with the registry's
+   own answer when the window is spent;
+3. atomically repins every discovered `cardano_amaru` producer reference; when
+   the consumer `main` already pins that exact image there is nothing to
+   commit, so the transport reports `CURRENT <main-sha>`, opens no branch or
+   pull request, and the controller skips steps 4 and 5 and launches against
+   that `main` head after the same producer-image census;
 4. requires the named workflow/job results on the exact consumer head and
    retains the positive, non-zero output from
    `scripts/check-amaru-producer-image-refs.sh`;
-5. checks lane-supervised guarded integration once; an open PR records the
-   bounded AWAITING outcome, while a merged PR must have the verified candidate
-   head and be exact current `main`—the transport has no generated-PR
-   self-merge command;
+5. merges the repin pull request itself, at exactly the head whose checks and
+   producer-image census were verified (`merge-verified-repin`, a merge commit
+   with the verified head as the match condition, using the consumer App
+   identity); a moved head, a closed pull request or an API refusal fails the
+   run at `stage=consumer-merge` and nothing is launched. It then reads the
+   integration once: a merged PR must have the verified candidate head and be
+   exact current `main`, and a PR still open at that read records the bounded
+   AWAITING outcome;
 6. invokes `cardano-node.yaml` once with `test=cardano_amaru`, `duration=1`,
    and `no-faults=false`, then waits for the run result before recording the
    upstream SHA as successful.
