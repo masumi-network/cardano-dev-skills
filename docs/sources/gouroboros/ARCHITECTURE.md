@@ -1,6 +1,6 @@
-# Gouroboros Architecture
+# gOuroboros Architecture
 
-Gouroboros is a Go implementation of the Cardano blockchain protocol, providing ledger validation, network protocol support, consensus primitives, and cryptographic operations.
+gOuroboros is a Go implementation of the Cardano blockchain protocol, providing ledger validation, network protocol support, consensus primitives, and cryptographic operations.
 
 ## High-Level Architecture
 
@@ -311,10 +311,52 @@ Implements Ouroboros Praos consensus primitives.
 | block.go | Block construction (BlockBuilder, OperationalCert, Header) |
 | leader.go | Leader eligibility checking |
 | selection.go | Chain selection (Praos ordering + Genesis density comparison) |
-| threshold.go | Leadership threshold calculation |
+| eligibility.go | Immutable prepared E34 predicate and natural/raw-output APIs |
+| eligibility_cache.go | Bounded successful private-state LRU |
+| e34.go | Pinned finite fixed-point arithmetic and bounded comparator |
 | validate.go | Block validation |
 | byron/ | Byron-era consensus validation |
 | genesis/ | Genesis consensus handling |
+
+### Finite Leader Eligibility
+
+`NewLeaderEligibility` prepares the pinned Haskell node's finite E34 rule
+once for a mode, stake tuple and exact rational active-slot coefficient.
+Signed integer values have scale `10^34`; multiplication/division floor at
+each production operation. The active-slot logarithm is prepared from the
+rounded coefficient, not recomputed as an ideal logarithm. Only the bounded
+exponential comparator's `BELOW` classification elects; `ABOVE` and
+`MAX_REACHED` at 1000 iterations return false. No ideal cutoff or numerical
+margin is exposed.
+
+CPraos derives a 256-bit natural from BLAKE2b-256(`"L" || output`); TPraos
+interprets the 64-byte output as an unsigned 512-bit big-endian natural.
+`CheckVRFOutput` requires exactly 64 bytes and does not verify cryptography.
+`CheckCertifiedNatural` accepts `[0, M]`, with `M=2^256` or `2^512`.
+The artificial oracle endpoint `M` is not a wire value and uses quotient
+`M*10^34`, while representable values use `floor(M*10^34/(M-v))`.
+
+Coefficients are exact rationals in `[1/10^19, 1]` with reduced Word64
+numerator/denominator, including nondecimal values such as `1/3`.
+Construction rejects zero total stake, clamps pool stake above a positive
+total as gOuroboros policy, and validates before unconditional `f=1`.
+The primitive accepts zero pool stake at `f=1`; election, component and
+header adapters preserve separate zero-pool policy gates. Election/components
+also preserve their nonpositive-coefficient false policy, while header
+validation rejects invalid coefficients. Unsupported positive rationals
+error even when an adapter would otherwise reject zero stake.
+
+Prepared private state is immutable. A 4096-entry mutex/map/list LRU retains
+successful preparations, keyed by mode, normalized stake values and the
+validated exact coefficient. Expensive computation occurs outside the lock.
+Fresh public wrappers prevent caller reassignment from corrupting cache hits;
+all per-decision scratch is local. Slot search prepares once and checks
+cancellation before preparation and every slot. Election, scheduling and
+inbound verified-output checks share this one decision engine.
+
+The independent embedded E34 corpus preserves its pinned source/package
+provenance and checksums. It is not an installed-node replay; ordinary Go
+tests require neither adjacent workspaces nor Haskell execution.
 
 ### Interfaces
 
@@ -420,32 +462,65 @@ err = ts.SubmitTx(txCbor)
 ## Data Flow: Block Processing
 
 ```
-1. Network receives block bytes
-2. DetermineBlockType(header) -> BlockType
-3. NewBlockFromCbor(type, bytes) -> Block
+1. Network receives the hard-fork envelope type and block bytes
+2. `BlockTypeResolver` reads the preserved signed header and confirms that the
+   envelope type is the authoritative active era
+3. NewBlockFromCbor(envelopeType, bytes) -> Block
 4. Extract components:
    |- BlockHeader (VRF, KES, slot)
    |- Transaction bodies
    |- Witness sets
    |- Metadata
-5. VerifyBlock() validates:
+5. VerifyBlockLocal() validates:
    |- Body hash matches header
    |- Block-local VRF proof bytes and KES signature
-   |- Ledger rules per era
-6. For each transaction:
+6. ChainContextValidator checks ordered linkage and consensus state
+7. VerifyBlockState() reads refreshed ledger state and protocol parameters
+   and checks certificates, block limits, pool registration, and transactions:
    |- Verify signatures
    |- Check fees, TTL
    |- Validate UTxO consumption
    |- Execute supported Plutus scripts
    |- Process certificates
-7. Update ledger state
+8. `ApplyFunc` atomically updates ledger state
 ```
 
-`VerifyBlock()` and `pipeline.ValidateStage` are block-local validation helpers,
-not complete consensus gates. They do not receive the previous header, active
+`VerifyBlockLocal()` checks cryptography and body integrity without ledger state.
+`VerifyBlockState()` checks certificates, block limits, transactions, and pool
+registration against the state before the block. `VerifyBlock()` combines both.
+These helpers are not complete consensus gates. They do not receive the previous
+header, active
 stake distribution, active slot coefficient, max KES evolutions, or operational
 certificate sequence state. Production chain validation must combine these
-checks with chain-context consensus validation before accepting a block.
+checks with pre-decode block-type resolution and ordered chain-context
+consensus validation before accepting a block.
+
+`VerifyBlock()` takes the ledger state before the block and validates each
+transaction against it plus the effects of the transactions before it in the
+block, through `common.BlockLedgerState`: spent and created outputs (only
+collateral and collateral return for a phase-2-invalid transaction),
+withdrawals, direct deposits, stake, pool, DRep and committee certificates,
+vote delegations (cleared when their DRep deregisters), and governance
+proposals, applied for each Dijkstra sub-transaction before the top-level
+body. A pool re-registration records future parameters and leaves the
+current registration in place, as the POOL rule does. It never
+writes to the caller's state. Rules read the optional capabilities a
+transaction can change (stake deposits, DRep delegations, committee
+credentials) through `common.StakeCredentialDepositStateFor` and its siblings
+rather than `common.UnwrapLedgerState`, which would skip the block's effects.
+
+Future pool VRF lookups preserve this overlay even when an outer adapter
+implements the capability. Re-registering a pool releases its superseded
+future VRF key for later transactions in the block. Protocol version 11 and
+later require `FuturePoolParametersState` for pool registrations; unavailable
+state produces a typed configuration error. Governance validation similarly
+requires authoritative roots, action contents and expiry when the action needs
+them. A proposal from an earlier Dijkstra child is visible to later child votes.
+
+Block-wide resource checks require protocol parameters whenever transactions,
+block CBOR or header CBOR are present, unless `SkipBlockLimitsValidation` is
+explicitly selected. Header-only callers must provide parameters or select that
+skip alongside their other header verification options.
 
 Binding the body to the header happens at decode, inside `NewBlockFromCbor`,
 not in `VerifyBlock()`. Every era does this by default and skips it only when
@@ -478,19 +553,49 @@ The `pipeline` package provides a staged block processing pipeline with worker p
 ```
 
 - **DecodeStage**: CBOR decoding of raw block bytes (parallelizable)
-- **ValidateStage**: Block-local validation (VRF proof bytes, KES signature, ledger rules)
-- **ApplyStage**: State updates (must preserve ordering)
+- **ValidateStage**: Parallel block-local cryptography and body integrity
+- **ApplyStage**: Ordered chain-context validation, refreshed ledger validation,
+  and atomic state updates
+
+Normal pipelines require `VerifyConfigProvider` to read ledger state and protocol
+parameters after earlier blocks commit. The ordered stage checks certificates,
+block limits, transactions, and pool registration before calling `ApplyFunc`.
+Parallel workers never read that mutable ledger state.
+
+`WithHeaderOnly()` returns ordered, cryptographically checked blocks to an
+external ledger validator without applying them. `WithTrustedDecodeOnly()`
+decodes trusted persisted data without validation. Neither offline mode is
+accepted by ChainSync or BlockFetch clients. Network pipelines must own ordered
+validation and application; each peer needs its own pipeline because a rejection
+stops processing, and each protocol fence waits for ordered completion.
 
 Usage:
 ```go
 pipeline := pipeline.NewBlockPipeline(
     pipeline.WithDecodeWorkers(4),
     pipeline.WithValidateWorkers(2),
+    pipeline.WithBlockTypeResolver(resolveBlockType),
+    pipeline.WithEta0Provider(eta0Provider),
+    pipeline.WithSlotsPerKesPeriod(slotsPerKesPeriod),
+    pipeline.WithChainContextValidator(validateChainContext),
+    pipeline.WithVerifyConfigProvider(currentVerifyConfig),
+    pipeline.WithApplyFunc(applyBlock),
 )
-pipeline.Start(ctx)
-pipeline.Submit(blockItem)
-for result := range pipeline.Results() { ... }
+if err := pipeline.Start(ctx); err != nil { ... }
+if err := pipeline.Submit(ctx, blockType, rawBlock, tip); err != nil { ... }
+for result := range pipeline.Results() {
+    consume(result)
+    result.Release()
+}
 ```
+
+Pipeline admission reserves the raw and decoded full block CBOR copies against
+`MaxRawCborBytes` before allocating a `BlockItem`. A result stays charged until
+the consumer receives it from the results channel. The consumer then owns the
+item and should call `BlockItem.Release()` when finished to clear the raw and
+decoded CBOR; received results are no longer included in the pipeline budget. A
+zero byte limit selects `DefaultMaxRawCborBytes`, and stopping the pipeline
+retires internally owned items and results that shutdown drains.
 
 ## Testing
 
@@ -498,7 +603,7 @@ for result := range pipeline.Results() { ... }
 
 ```
 internal/test/
-|- conformance/         # Amaru test vectors (314 rules)
+|- conformance/         # Pinned Cardano Blueprint ledger vectors and focused protocol suites
 |- cardano-blueprint/   # Cardano specification reference
 
 ledger/**/*_test.go     # Unit tests

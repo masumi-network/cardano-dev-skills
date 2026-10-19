@@ -1,8 +1,7 @@
 <div align="center">
-  <img src="./.github/assets/gOuroboros-logo-with-text-horizontal.png" alt="gOurobros Logo" width="640">
+  <img src="./.github/assets/gOuroboros-logo-with-text-horizontal.png" alt="gOuroboros logo" width="640">
   <br>
   <img alt="GitHub" src="https://img.shields.io/github/license/blinklabs-io/gouroboros">
-  <a href="https://goreportcard.com/report/github.com/blinklabs-io/gouroboros"><img src="https://goreportcard.com/badge/github.com/blinklabs-io/gouroboros" alt="Go Report Card"></a>
   <a href="https://pkg.go.dev/github.com/blinklabs-io/gouroboros"><img src="https://pkg.go.dev/badge/github.com/blinklabs-io/gouroboros.svg" alt="Go Reference"></a>
   <a href="https://deepwiki.com/blinklabs-io/gouroboros"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
   <a href="https://discord.gg/5fPRZnX4qW"><img src="https://img.shields.io/badge/Discord-7289DA?style=flat&logo=discord&logoColor=white" alt="Discord"></a>
@@ -104,6 +103,9 @@ This is not an exhaustive list of existing and planned features, but it covers t
     - [X] LocalMessageNotification ([CIP-0137](https://cips.cardano.org/cip/CIP-0137) DMQ)
       - [X] Client support
       - [X] Server support
+    - [ ] PerasVotes ([CIP-0140](https://cips.cardano.org/cip/CIP-0140), [Tweag cardano-peras](https://github.com/tweag/cardano-peras)) - mini-protocol number reserved (17); client/server not yet implemented
+      - [ ] Client support
+      - [ ] Server support
 - [ ] Ledger
   - [ ] Eras
     - [X] Byron
@@ -202,16 +204,16 @@ This is not an exhaustive list of existing and planned features, but it covers t
   - [X] Leader election
   - [X] Block construction
   - [X] Chain selection
-  - [X] Threshold calculation
+  - [X] Finite E34 leader eligibility
   - [X] Genesis configuration
   - [X] Byron consensus (OBFT header validation)
 - [X] Testing
   - [X] Test framework for mocking Ouroboros conversations
-  - [X] Conformance tests (3400+ passing)
-    - [X] Ledger rules (315 tests via Amaru vectors)
+  - [X] Conformance suites (see `internal/test/conformance/README.md`; suites have separate scopes)
+    - [X] Ledger rules (pinned Cardano Blueprint corpus; coverage reported by era and rule family)
     - [X] VRF cryptography (29 vectors + 15 unit tests)
     - [X] KES cryptography (14 tests via input-output-hk/kes vectors)
-    - [X] Consensus (222 tests for leader election, threshold, selection)
+    - [X] Consensus (leader election, finite E34 eligibility, selection)
     - [X] Byron blocks (15 tests from mainnet/testnet/conformance)
   - [X] Fuzz testing (19 targets, 14 in nightly CI)
   - [X] CBOR deserialization and serialization
@@ -226,46 +228,24 @@ This is not an exhaustive list of existing and planned features, but it covers t
     - [X] Deserialize from CBOR
     - [X] Retrieve staking key
 
-## Examples
-
-The `examples/` directory contains self-contained example programs demonstrating how to use the library.
-Each example has its own Go module with a local `replace` back to this checkout:
-
-| Example | Protocol | Description |
-|---------|----------|-------------|
-| `block-fetch` | Node-to-Node | Fetch a specific block by slot and hash |
-| `chain-sync` | NtC / NtN | Sync blocks from genesis or a specific era; supports rollback/rollforward |
-| `chain-tip` | Node-to-Client | Get the current chain tip via ChainSync |
-| `peer-sharing` | Node-to-Node | Request a list of peers from a remote node |
-| `ping` | Node-to-Client | Measure connection and protocol handshake latency |
-| `state-query` | Node-to-Client | Query protocol parameters and other node state |
-| `tx-monitor` | Node-to-Client | Inspect the node mempool contents |
-| `tx-submission` | Node-to-Client | Submit a signed transaction to the node |
-
-Build all examples:
-
-```
-make build
-```
-
-Run an example directly (e.g. check the current chain tip over a local socket):
-
-```
-go -C examples/chain-tip run .
-```
-
-See the inline comments in each `main.go` and the environment variables each command accepts for full usage details.
-
 ## Testing
 
-gOuroboros includes automated tests that cover various aspects of its functionality, but not all. For more than the basics,
-manual testing is required.
+gOuroboros includes automated tests that cover various aspects of its
+functionality.
 
 ### Running the automated tests
 
 ```
 make test
 ```
+
+### Running cardano-node integration tests
+
+The opt-in integration suite connects to a real node, reads its chain tip,
+decodes a block, and exercises ChainSync restart behavior. It requires a
+running node with a nonempty chain and access to its Node-to-Client socket.
+See [the integration test guide](internal/test/cardano-node-integration/README.md)
+for setup and run instructions.
 
 ### Running the linter
 
@@ -274,32 +254,4 @@ gOuroboros uses [golangci-lint](https://golangci-lint.run/) for code quality che
 
 ```
 make lint
-```
-
-### Manual testing
-
-Example programs are included in the `examples/` directory of this repo. Some can be run against public nodes
-via NtN protocols; others require access to the UNIX socket of a local node for NtC protocols.
-
-#### Run chain-sync from the start of a particular era
-
-This is useful for testing changes to the handling of ledger types for a particular era. It will decode each block and either print
-a summary line for the block or an error.
-
-Run the chain-sync example against a public mainnet node, starting at the beginning of the Shelley era:
-
-```
-CARDANO_NODE_ADDRESS=backbone.cardano.iog.io:3001 CARDANO_NODE_NETWORK=mainnet ./chain-sync -bulk -start-era shelley
-```
-
-This will produce a LOT of output and take quite a few hours to reach chain tip. You're mostly looking for it to get through
-all blocks of the chosen start era before hitting the next era or chain tip
-
-#### Dump details of a particular block
-
-You can use the `block-fetch` example to fetch a particular block and dump its details. You must provide at least
-the block slot and hash. This is useful for debugging decoding problems, since it allows fetching a specific block and decoding it over and over.
-
-```
-BLOCK_FETCH_SLOT=120521627 BLOCK_FETCH_HASH=afd4c97e32003d9803a305011cbd8796e6b36bf61576567206887e35795b6e09 ./block-fetch
 ```
