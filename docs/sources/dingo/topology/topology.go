@@ -59,6 +59,35 @@ type TopologyConfigP2PPublicRoot struct {
 	WarmValency  uint                           `json:"warmValency"`
 }
 
+// UnmarshalJSON accepts the reference node's hotValency spelling as well as
+// valency. valency takes precedence when both are present, as in the reference.
+func (r *TopologyConfigP2PLocalRoot) UnmarshalJSON(data []byte) error {
+	type root TopologyConfigP2PLocalRoot
+	var decoded struct {
+		root
+		Valency     *uint `json:"valency"`
+		HotValency  *uint `json:"hotValency"`
+		WarmValency *uint `json:"warmValency"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*r = TopologyConfigP2PLocalRoot(decoded.root)
+	if decoded.Valency != nil {
+		r.Valency = *decoded.Valency
+	} else if decoded.HotValency != nil {
+		r.Valency = *decoded.HotValency
+	}
+	r.WarmValency = r.Valency
+	if decoded.WarmValency != nil {
+		r.WarmValency = *decoded.WarmValency
+		if r.WarmValency < r.Valency {
+			return errors.New("local root warmValency must be >= valency")
+		}
+	}
+	return nil
+}
+
 type TopologyConfigP2PBootstrapPeer = TopologyConfigP2PAccessPoint
 
 // PeerSnapshotConfig represents cardano-node's peer-snapshot.json format.
@@ -84,7 +113,7 @@ type PeerSnapshotLedgerPool struct {
 const supportedPeerSnapshotVersion = 23
 
 // Validate checks that a peer snapshot is a supported, internally consistent
-// source of TCP relay endpoints for the configured network.
+// source of relay endpoints for the configured network.
 func (s *PeerSnapshotConfig) Validate(networkMagic uint32) error {
 	if s == nil {
 		return nil
@@ -158,11 +187,6 @@ func validatePeerSnapshotRelay(relay TopologyConfigP2PAccessPoint) error {
 	if relay.Address == "" {
 		return errors.New("address must not be empty")
 	}
-	if relay.Port == 0 {
-		return errors.New(
-			"SRV relay mode is not supported; port must be specified",
-		)
-	}
 	if uint64(relay.Port) > math.MaxUint16 {
 		return fmt.Errorf("port %d is outside the TCP port range", relay.Port)
 	}
@@ -173,6 +197,9 @@ func validatePeerSnapshotRelay(relay TopologyConfigP2PAccessPoint) error {
 				relay.Address,
 			)
 		}
+		if relay.Port == 0 {
+			return errors.New("port must be specified for IP relay")
+		}
 		return nil
 	}
 	if !validPeerSnapshotHostname(relay.Address) {
@@ -181,6 +208,8 @@ func validatePeerSnapshotRelay(relay TopologyConfigP2PAccessPoint) error {
 			relay.Address,
 		)
 	}
+	// A zero port on a DNS relay marks Cardano's MultiHostName form. Peer
+	// governance resolves its port from SRV records.
 	return nil
 }
 
@@ -262,7 +291,11 @@ func NewTopologyConfigFromFS(
 
 // maxTopologySize is the maximum allowed size for a topology config file
 // (10 MB). This prevents unbounded memory allocation from untrusted readers.
-const maxTopologySize = 10 * 1024 * 1024
+const (
+	maxTopologySize     = 10 * 1024 * 1024
+	maxPeerSnapshotSize = 10 * 1024 * 1024
+	maxAccessPointPort  = 65535
+)
 
 func NewTopologyConfigFromReader(r io.Reader) (*TopologyConfig, error) {
 	t := &TopologyConfig{}
@@ -279,12 +312,11 @@ func NewTopologyConfigFromReader(r io.Reader) (*TopologyConfig, error) {
 	if err := json.Unmarshal(data, t); err != nil {
 		return nil, err
 	}
+	if err := t.validate(); err != nil {
+		return nil, err
+	}
 	return t, nil
 }
-
-// maxPeerSnapshotSize is the maximum allowed size for peer-snapshot.json
-// (10 MB). This matches topology config's defensive read limit.
-const maxPeerSnapshotSize = 10 * 1024 * 1024
 
 func NewPeerSnapshotConfigFromReader(
 	r io.Reader,
@@ -304,6 +336,101 @@ func NewPeerSnapshotConfigFromReader(
 		return nil, err
 	}
 	return s, nil
+}
+
+func validateAccessPoint(
+	ap TopologyConfigP2PAccessPoint,
+	field string,
+) error {
+	if strings.TrimSpace(ap.Address) == "" {
+		return fmt.Errorf("%s.address must not be empty", field)
+	}
+	if ap.Port == 0 || ap.Port > maxAccessPointPort {
+		return fmt.Errorf("%s.port must be in range 1-65535", field)
+	}
+	return nil
+}
+
+// validateRootValencies checks the ordering and access-point bound specified
+// by the topology validation rules. An empty access-point list is allowed
+// because the shipped network topologies use it with peer snapshots.
+func validateRootValencies(
+	fieldPrefix string,
+	warmValency uint,
+	valency uint,
+	accessPointCount int,
+) error {
+	if warmValency != 0 && warmValency < valency {
+		return fmt.Errorf(
+			"%s.warmValency must be >= %s.valency",
+			fieldPrefix,
+			fieldPrefix,
+		)
+	}
+	if accessPointCount > 0 && valency > uint(accessPointCount) {
+		return fmt.Errorf(
+			"%s.valency must be <= len(%s.accessPoints)",
+			fieldPrefix,
+			fieldPrefix,
+		)
+	}
+	if accessPointCount > 0 && warmValency > uint(accessPointCount) {
+		return fmt.Errorf("%s.warmValency must be <= len(%s.accessPoints)", fieldPrefix, fieldPrefix)
+	}
+	return nil
+}
+
+func (t *TopologyConfig) validate() error {
+	for idx, localRoot := range t.LocalRoots {
+		fieldPrefix := fmt.Sprintf("localRoots[%d]", idx)
+		for apIdx, ap := range localRoot.AccessPoints {
+			if err := validateAccessPoint(
+				ap,
+				fmt.Sprintf("%s.accessPoints[%d]", fieldPrefix, apIdx),
+			); err != nil {
+				return err
+			}
+		}
+		if err := validateRootValencies(
+			fieldPrefix,
+			localRoot.WarmValency,
+			localRoot.Valency,
+			len(localRoot.AccessPoints),
+		); err != nil {
+			return err
+		}
+	}
+
+	for idx, publicRoot := range t.PublicRoots {
+		fieldPrefix := fmt.Sprintf("publicRoots[%d]", idx)
+		for apIdx, ap := range publicRoot.AccessPoints {
+			if err := validateAccessPoint(
+				ap,
+				fmt.Sprintf("%s.accessPoints[%d]", fieldPrefix, apIdx),
+			); err != nil {
+				return err
+			}
+		}
+		if err := validateRootValencies(
+			fieldPrefix,
+			publicRoot.WarmValency,
+			publicRoot.Valency,
+			len(publicRoot.AccessPoints),
+		); err != nil {
+			return err
+		}
+	}
+
+	for idx, bootstrapPeer := range t.BootstrapPeers {
+		if err := validateAccessPoint(
+			bootstrapPeer,
+			fmt.Sprintf("bootstrapPeers[%d]", idx),
+		); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func NewPeerSnapshotConfigFromFile(
