@@ -78,15 +78,24 @@ const tx2 = await template.build() // No contamination from tx1
 
 ### CBOR: Aiken-Compatible by Default
 
-`UPLC.applyParamsToScript()` uses Aiken-compatible CBOR encoding (indefinite-length arrays/maps) by default. If you're using a different Plutus toolchain, you may need different options.
+Plutus data is encoded with `CBOR.PLUTUS_DATA_OPTIONS` by default: indefinite-length lists and constructor fields, definite-length maps. This is the layout the node, `cardano-cli`, and `aiken blueprint apply` use. The default covers `Data.toCBORHex()`, `Data.toDatumHash()`, inline and witness datums, redeemer data, and the parameters of `UPLC.applyParamsToScript()`. If you're using a different Plutus toolchain, you may need different options.
 
 ```typescript
-// Default: Aiken encoding
+// Default: node layout, same as aiken blueprint apply
 UPLC.applyParamsToScript(script, params)
 
-// For CML-compatible encoding:
-UPLC.applyParamsToScript(script, params, CBOR.CML_DATA_DEFAULT_OPTIONS)
+// Definite lists and maps, like CML to_cbor_hex() on new data:
+UPLC.applyParamsToScript(script, params, CBOR.CML_DATA_DEFINITE_OPTIONS)
 ```
+
+Before this default, `Data` wrote non-empty maps indefinite, so a datum that holds a map had different bytes and a different datum hash. To reproduce those, pass the deprecated `CBOR.CML_DATA_DEFAULT_OPTIONS`:
+
+```typescript
+Data.toDatumHash(datum, CBOR.CML_DATA_DEFAULT_OPTIONS)
+Transaction.toCBORHex(tx, { ledger: CBOR.CML_DEFAULT_OPTIONS, plutusData: CBOR.CML_DATA_DEFAULT_OPTIONS })
+```
+
+The `plutusData` transaction options cover every new Plutus data item: inline datums, witness datums and redeemer data. A datum decoded from a transaction keeps its bytes.
 
 ### Scripts Are Double-CBOR Encoded
 
