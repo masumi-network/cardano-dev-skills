@@ -16,16 +16,26 @@ package dingo
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/blinklabs-io/dingo/chainselection"
 	"github.com/blinklabs-io/dingo/chainsync"
 	"github.com/blinklabs-io/dingo/ledger"
+	"github.com/blinklabs-io/dingo/ledger/leios"
 	ouroboros "github.com/blinklabs-io/gouroboros"
 	"github.com/blinklabs-io/gouroboros/cbor"
+	lcommon "github.com/blinklabs-io/gouroboros/ledger/common"
 	ochainsync "github.com/blinklabs-io/gouroboros/protocol/chainsync"
 	ocommon "github.com/blinklabs-io/gouroboros/protocol/common"
 )
+
+// errOuroborosNotStarted is returned by ledger callbacks that run before the
+// node has created its Ouroboros networking. The ledger starts, and replays
+// any stored blocks it has not applied, ahead of that, so these callbacks must
+// report "unavailable" for the ledger's normal retry path to handle.
+var errOuroborosNotStarted = errors.New("ouroboros networking is not started")
 
 func (n *Node) chainsyncSyncTarget(
 	update chainselection.PeerTipUpdateEvent,
@@ -45,7 +55,7 @@ func (n *Node) chainsyncSyncTarget(
 // The two were previously written out separately, and every divergence
 // silently disabled operator-configured behavior until the process
 // restarted: the CIP-23/CIP-50/CIP-0163 reward flags, then the block
-// pipeline flags, then GenesisSelectionStateFunc (issue #3273), which left
+// pipeline flags, then GenesisSelectionStateFunc, which left
 // a restored or truncated node resolving deep forks by Praos length alone
 // with Ouroboros Genesis density selection switched off. Building the
 // config once makes that class of drift structurally impossible rather
@@ -59,7 +69,9 @@ func (n *Node) chainsyncSyncTarget(
 // n.chainSelector are all replaced by a live rebuild -- a method value
 // would pin the rebuilt ledger to the outgoing instance.
 func (n *Node) ledgerStateConfig() ledger.LedgerStateConfig {
+	healthGeneration := n.health.currentGeneration()
 	return ledger.LedgerStateConfig{
+		Consensus:          n.selectedConsensusProvider(),
 		ChainManager:       n.chainManager,
 		Database:           n.db,
 		EventBus:           n.eventBus,
@@ -67,16 +79,27 @@ func (n *Node) ledgerStateConfig() ledger.LedgerStateConfig {
 		CardanoNodeConfig:  n.config.cardanoNodeConfig,
 		Network:            n.config.network,
 		PromRegistry:       n.config.promRegistry,
-		ForgeBlocks:        n.config.isDevMode(),
 		ValidateHistorical: n.config.validateHistorical,
 		EnableDijkstra:     n.config.experimentalDijkstraEnabled(),
 		StartInDijkstra:    n.config.startEra.IsDijkstra(),
 		// Parallel block-decode pipeline for the chainsync replay loop
-		// (issue #1894 phase 1). Not consensus-affecting; off by default.
+		// (phase 1 of the pipeline). Not consensus-affecting; off by default.
 		BlockPipelineEnabled: n.config.blockPipelineEnabled,
-		// Parallel VRF/KES validate stage for the same pipeline (issue
-		// #1894 phase 3). Off by default; requires BlockPipelineEnabled.
+		// Parallel VRF/KES validate stage for the same pipeline (phase 3).
+		// Off by default; requires BlockPipelineEnabled.
 		BlockPipelineValidateEnabled: n.config.blockPipelineValidateEnabled,
+		// Prefetch the next block's input UTxOs while the current block
+		// applies. Not consensus-affecting; on by default.
+		LedgerPrefetchAheadEnabled: n.config.ledgerPrefetchAheadEnabled,
+		// Verify validated blocks' witness signatures ahead of the apply
+		// loop. Not consensus-affecting; on by default.
+		LedgerValidateAheadEnabled: n.config.ledgerValidateAheadEnabled,
+		// Core-mode batched metadata writes for blocks that are not
+		// validated. Not consensus-affecting; off by default.
+		ApplyRowBatchingEnabled: n.config.ledgerApplyRowBatchingEnabled,
+		// Start blockfetch at one range of queued headers while far from
+		// the peer tip. Not consensus-affecting; off by default.
+		BlockfetchLowWatermarkEnabled: n.config.blockfetchLowWatermarkEnabled,
 		// Supplies fetched Leios endorser-block transactions so the ledger
 		// can apply them when their referencing Dijkstra ranking block is
 		// processed (completing the UTxO set for endorser-resident outputs).
@@ -88,7 +111,31 @@ func (n *Node) ledgerStateConfig() ledger.LedgerStateConfig {
 			ebHash []byte,
 			ebSlot uint64,
 		) ([]cbor.RawMessage, bool) {
-			return n.ouroboros().EndorserBlockTxsByHash(ebHash, ebSlot)
+			o := n.ouroboros()
+			if o == nil {
+				return nil, false
+			}
+			return o.EndorserBlockTxsByHash(ebHash, ebSlot)
+		},
+		EndorserBlockDataProvider: func(
+			ebHash []byte,
+			ebSlot uint64,
+		) ([]byte, []cbor.RawMessage, bool) {
+			o := n.ouroboros()
+			if o == nil {
+				return nil, nil, false
+			}
+			return o.EndorserBlockDataByHash(ebHash, ebSlot)
+		},
+		EndorserBlockValidation: func(
+			ebHash []byte,
+			ebSlot uint64,
+		) ledger.EndorserBlockValidationStatus {
+			o := n.ouroboros()
+			if o == nil {
+				return ledger.EndorserBlockValidationUnknown
+			}
+			return o.EndorserBlockValidation(ebHash, ebSlot)
 		},
 		// Actively fetches a referenced endorser block by point and caches
 		// it. Used during historical catch-up: the prototype relay serves
@@ -100,10 +147,32 @@ func (n *Node) ledgerStateConfig() ledger.LedgerStateConfig {
 			ebSlot uint64,
 			ebHash []byte,
 		) error {
-			return n.ouroboros().FetchEndorserBlockByPoint(
+			o := n.ouroboros()
+			if o == nil {
+				return fmt.Errorf(
+					"%w: %w",
+					ledger.ErrEndorserBlockFetchNoPeer,
+					errOuroborosNotStarted,
+				)
+			}
+			return o.FetchEndorserBlockByPoint(
 				ctx,
 				ebSlot,
 				ebHash,
+			)
+		},
+		ValidateLeiosAnnouncement: func(
+			ctx context.Context,
+			header lcommon.BlockHeader,
+		) error {
+			o := n.ouroboros()
+			if o == nil {
+				return errOuroborosNotStarted
+			}
+			return o.ValidateLeiosEndorserBlockForHeader(
+				ctx,
+				header,
+				ledger.LeiosEndorserBlockBasisHash(header),
 			)
 		},
 		// Wait, at the tip, for a ranking block's referenced endorser block
@@ -117,24 +186,43 @@ func (n *Node) ledgerStateConfig() ledger.LedgerStateConfig {
 		// certify deadline is the bound that matches when the EB is actually
 		// available to fetch.
 		EndorserBlockWaitSlots: n.leiosPipelineTiming().CertifyByDeadlineSlots,
-		// Two-path Leios ledger selection: the Musashi prototype
-		// (prototype-2026w29) applies only the certified parent EB, without
-		// validation or consumed-input recovery (Haskell-conformant), whereas
-		// dingo's forward path applies the current announcement normally
-		// (CIP-conformant).
-		LeiosApplyEndorserBlockTxs: !n.config.isMusashiNetwork(),
-		// The leadership stake includes reward-account balances; see
-		// LedgerStateConfig.SkipLeaderStakeThresholdCheck. The check
-		// rejected the dominant pool's eligible blocks on Musashi's
-		// concentrated topology and wedged the chain, so it is downgraded
-		// to a warning there and enforced on real networks. TPraos
-		// bootstrap pool-threshold checks are waived separately inside
-		// header validation after genesis overlay slots are handled.
-		SkipLeaderStakeThresholdCheck: n.config.prototypeTrustBypassesEnabled(),
-		// On Musashi, certified endorser txs and Dijkstra ranking-block txs are
-		// trusted by the prototype; skip dingo's per-tx validation to match it
-		// and keep block application at the production rate.
-		SkipDijkstraTxValidation: n.config.prototypeTrustBypassesEnabled(),
+		ValidateLeiosCertificate: func(
+			epoch uint64,
+			announcingBlockHash []byte,
+			signers []byte,
+			aggregatedSignature []byte,
+		) error {
+			voteManager := n.leiosCertificateVerifier.Load()
+			if voteManager == nil {
+				return errors.New("leios vote manager is unavailable")
+			}
+			message := leios.PrototypeVoteMessageBytes(
+				lcommon.Blake2b256(announcingBlockHash),
+			)
+			err := voteManager.ValidateDijkstraCertificate(
+				epoch,
+				signers,
+				aggregatedSignature,
+				message,
+			)
+			if errors.Is(err, leios.ErrInvalidCertificate) {
+				return fmt.Errorf(
+					"%w: %w",
+					ledger.ErrLeiosInvalidCertificate,
+					err,
+				)
+			}
+			return err
+		},
+		// GetStakePoolState is not part of released nodes' query set, so it
+		// is answered only on the Leios prototype network, identified
+		// strictly.
+		StakePoolStateQuery: n.config.musashiPrototypeIdentity(),
+		// The Leios prototype's Dijkstra era runs Praos2, whose chain-dependent
+		// state has a ninth field. Gated on the strict prototype identity,
+		// never on the era or a run mode alone: a released node runs Dijkstra
+		// on plain Praos.
+		Praos2ChainDepState: n.config.musashiPrototypeIdentity(),
 		// CIP-23 minimum pool margin (minimum variable fee). Operator-set,
 		// off by default (0), effective only in Dijkstra and later.
 		MinPoolMargin: n.config.minPoolMargin,
@@ -154,19 +242,42 @@ func (n *Node) ledgerStateConfig() ledger.LedgerStateConfig {
 			connId ouroboros.ConnectionId,
 			start ocommon.Point,
 			end ocommon.Point,
-		) error {
-			return n.ouroboros().
-				BlockfetchClientRequestRange(connId, start, end)
+		) (uint64, error) {
+			o := n.ouroboros()
+			if o == nil {
+				return 0, errOuroborosNotStarted
+			}
+			return o.BlockfetchClientRequestRange(connId, start, end)
 		},
-		PeersWithBlockFunc: func(
+		RejectBlockDecodeCacheFunc: func(blockType uint, raw []byte) {
+			if o := n.ouroboros(); o != nil {
+				o.InvalidateBlockDecodeCache(blockType, raw)
+			}
+		},
+		SelectBlockfetchPeerFunc: func(
 			origin ouroboros.ConnectionId,
-			point ocommon.Point,
-		) []ouroboros.ConnectionId {
-			var peers []ouroboros.ConnectionId
+			rangeEnd ocommon.Point,
+		) ouroboros.ConnectionId {
+			selected := origin
 			n.withLiveChainsyncState(func(state *chainsync.State) {
-				peers = state.PeersWithBlock(origin, point)
+				selected = state.SelectBlockfetchPeer(origin, rangeEnd)
 			})
-			return peers
+			return selected
+		},
+		SelectBlockfetchRetryPeerFunc: func(
+			excluded []ouroboros.ConnectionId,
+			rangeEnd ocommon.Point,
+			timeoutPenalty time.Duration,
+		) (ouroboros.ConnectionId, bool, bool) {
+			var selected ouroboros.ConnectionId
+			found := false
+			available := n.withLiveChainsyncState(func(state *chainsync.State) {
+				if timeoutPenalty > 0 && len(excluded) > 0 {
+					state.RecordBlockfetchLatency(excluded[0], timeoutPenalty)
+				}
+				selected, found = state.SelectBlockfetchRetryPeer(excluded, rangeEnd)
+			})
+			return selected, found, available
 		},
 		RecordBlockfetchLatencyFunc: func(
 			connId ouroboros.ConnectionId,
@@ -179,27 +290,14 @@ func (n *Node) ledgerStateConfig() ledger.LedgerStateConfig {
 				)
 			})
 		},
-		BlockfetchLatencyFunc: func(
+		RecordBlockfetchThroughputFunc: func(
 			connId ouroboros.ConnectionId,
-		) (time.Duration, bool) {
-			var (
-				latency time.Duration
-				ok      bool
-			)
+			bytes uint64,
+			elapsed time.Duration,
+		) {
 			n.withLiveChainsyncState(func(state *chainsync.State) {
-				latency, ok = state.BlockfetchLatency(connId)
+				state.RecordBlockfetchThroughput(connId, bytes, elapsed)
 			})
-			return latency, ok
-		},
-		BlockfetchLatencyMedianFunc: func() (time.Duration, int) {
-			var (
-				latency time.Duration
-				count   int
-			)
-			n.withLiveChainsyncState(func(state *chainsync.State) {
-				latency, count = state.BlockfetchLatencyMedian()
-			})
-			return latency, count
 		},
 		DatabaseWorkerPoolConfig: n.config.DatabaseWorkerPoolConfig,
 		GetActiveConnectionFunc: func() *ouroboros.ConnectionId {
@@ -237,6 +335,7 @@ func (n *Node) ledgerStateConfig() ledger.LedgerStateConfig {
 			return n.connManager != nil &&
 				n.connManager.GetConnectionById(connId) != nil
 		},
+		NetworkIngestHoldTracker: n.networkIngestHold(),
 		ConnectionSwitchFunc: func() {
 			// Retain older seen-header history so a switched peer
 			// can replay only the post-tip segment from the local
@@ -272,13 +371,15 @@ func (n *Node) ledgerStateConfig() ledger.LedgerStateConfig {
 			}
 			return ledger.ChainsyncEvent{
 				ConnectionId: h.ConnectionId,
-				BlockHeader:  h.BlockHeader,
-				ArrivalTime:  h.ArrivalTime,
-				Point:        h.Point,
-				Tip:          h.Tip,
-				BlockNumber:  h.BlockNumber,
-				Type:         h.Type,
-				Rollback:     h.Rollback,
+				HeaderCryptoVerificationGeneration: h.
+					HeaderCryptoVerificationGeneration,
+				BlockHeader: h.BlockHeader,
+				ArrivalTime: h.ArrivalTime,
+				Point:       h.Point,
+				Tip:         h.Tip,
+				BlockNumber: h.BlockNumber,
+				Type:        h.Type,
+				Rollback:    h.Rollback,
 			}, prevHash, true
 		},
 		GenesisSelectionStateFunc: func() (bool, uint64) {
@@ -286,6 +387,17 @@ func (n *Node) ledgerStateConfig() ledger.LedgerStateConfig {
 				return false, 0
 			}
 			return n.chainSelector.GenesisSelectionState()
+		},
+		// Feeds the node's readiness probe (internal/health) the same
+		// wall-clock-to-tip gap the dingo_tip_gap_slots gauge carries, so
+		// /readyz needs neither the Prometheus listener nor a live
+		// n.ledgerState pointer. A closure over n, not a method value on
+		// n.ledgerState, so a live rebuild keeps reporting.
+		ReportTipGapFunc: func(gapSlots uint64) {
+			n.health.recordTipGap(healthGeneration, gapSlots)
+		},
+		ReportSlotClockAliveFunc: func() {
+			n.health.recordSlotClockAlive(healthGeneration)
 		},
 		FatalErrorFunc: func(err error) {
 			n.config.logger.Error(
@@ -295,4 +407,21 @@ func (n *Node) ledgerStateConfig() ledger.LedgerStateConfig {
 			n.cancelForFatal(err)
 		},
 	}
+}
+
+// networkIngestHold returns the node's ingest hold, created on first use. It
+// outlives every ledger and chainsync state a live restore rebuilds.
+func (n *Node) networkIngestHold() *chainsync.IngestHold {
+	n.ingestHoldOnce.Do(func() {
+		n.ingestHold = &chainsync.IngestHold{}
+	})
+	return n.ingestHold
+}
+
+// publishChainsyncState installs state as the node's chainsync state and
+// attaches the ingest hold to it. A nil state is the gap while a live
+// restore rebuilds it.
+func (n *Node) publishChainsyncState(state *chainsync.State) {
+	n.chainsyncState = state
+	n.networkIngestHold().Attach(state)
 }

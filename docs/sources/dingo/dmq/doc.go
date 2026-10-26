@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package dmq implements phase 1 of CIP-0137's Decentralized Message Queue:
-// the generic message pool shared by every DMQ topic instance. It holds no
-// opinion about authentication, KES/opcert validation, network wiring, or
-// peer selection -- those belong to later CIP-0137 phases (issues #1949-#1954).
+// Package dmq implements CIP-0137's Decentralized Message Queue: the generic
+// message pool shared by every DMQ topic instance, and the Stack that serves
+// it to local producers and consumers over a Unix socket alongside the Cardano
+// stack. The pool itself holds no opinion about authentication, KES/opcert
+// validation, network wiring, or peer selection.
 //
 // The wire types -- Message, MessagePayload, and OperationalCertificate, along
 // with their CBOR encode/decode and message-ID computation -- already exist
@@ -38,9 +39,8 @@
 // A peer new to the pool starts at the beginning of the retained log; each
 // call advances that peer's cursor past the message it returns. This mirrors
 // CIP-0137's per-peer outstanding-message-ids queue for the node-to-node
-// message-submission mini-protocol (protocol 18), without implementing the
-// protocol's blocking/non-blocking request state machine itself -- that is
-// phase 3's job (issue #1950).
+// message-submission mini-protocol (protocol 11). The pool does not run that
+// protocol's blocking/non-blocking request state machine; PeerConn does.
 //
 // # Size limits and backpressure
 //
@@ -49,4 +49,36 @@
 // bound with ErrFull, and rejects an already-expired message with ErrExpired,
 // so callers can apply their own backpressure or reply with a CIP-0137 reject
 // reason without the pool growing unbounded between TTL sweeps.
+//
+// # Local submission and notification
+//
+// A Stack owns one topic instance: a MessageMempool, a connection manager of
+// its own, and a Unix socket speaking the DMQ node-to-client handshake under
+// the topic's network magic. Each connection carries both local mini-protocols.
+//
+// Local message submission validates a message in order -- already expired,
+// the current KES period when one is configured, expiry beyond the configured
+// message TTL, CIP-0137 authentication -- and then admits it to the pool. It
+// replies accept, or rejects with the current CIP-0137 reason: expired,
+// invalid (with the validation error), alreadyReceived for a duplicate ID, or
+// other (with the error) when the current KES period cannot be resolved or the
+// pool is full.
+//
+// # Node-to-node exchange
+//
+// Stack.AttachPeer runs CIP-0137's node-to-node message submission, version 2
+// as dmq-node encodes it, over a connection the caller supplies. Both sides can
+// serve and pull: the serving side announces pooled message IDs and sizes from a
+// per-peer cursor and returns bodies on request, and the pulling side, which is
+// the connection's initiator, fetches the IDs it lacks and admits them through
+// the same checks a local submission gets, including the size limits CIP-0137
+// fixes. The connection also runs keep-alive on dmq-node's mini-protocol number
+// 12. internal/test/dmqinterop runs it against a real dmq-node.
+//
+// Local message notification gives each connection its own cursor over the
+// pool, so every consumer receives each unexpired message once. A feeder
+// goroutine moves messages from the cursor into the connection's notification
+// queue and holds back any message the queue refuses, so a slow consumer
+// delays messages but loses none except those that expire before delivery. Blocking and non-blocking requests are answered by the
+// gouroboros notification server.
 package dmq

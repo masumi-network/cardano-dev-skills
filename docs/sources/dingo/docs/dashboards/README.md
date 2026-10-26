@@ -7,10 +7,11 @@ Monitoring dashboards for [Dingo](https://github.com/blinklabs-io/dingo), the Go
 | Dashboard | File | Description |
 |-----------|------|-------------|
 | **Node Overview** | `node-overview.json` | At-a-glance header (epoch, slot, tip gap, density, blockfetch, mempool, KES, peers, storage, runtime), block height, epoch progress, forging stats |
-| **Block Production** | `block-production.json` | Forge latency heatmap, block delay CDFs, forge rates, KES lifecycle |
+| **Block Production** | `block-production.json` | Forge latency heatmap, block delay CDFs, forge rates, KES lifecycle, per-block composition vs. SQL query volume |
 | **Peer Health** | `peer-health.json` | Hot/warm/cold peers, connection types, peer state timeseries, promotions/demotions, network I/O |
 | **Mempool** | `mempool.json` | Pending TXs, mempool size, TX lifecycle, CBOR cache, event bus |
 | **Resource Usage** | `resources.json` | CPU, memory, GC heatmap, disk I/O, IOPS, PSI pressure, Badger, file descriptors |
+| **Leios** | `leios.json` | Voting committee, own votes not cast by reason, votes received and rejected, endorser block pipeline and stages, diffusion waits, endorser block forging |
 
 ## Prerequisites
 
@@ -18,7 +19,7 @@ Before you begin, make sure you have:
 
 - **Grafana 12+** (tested on 12.4) — [install guide](https://grafana.com/docs/grafana/latest/setup-grafana/installation/)
 - **Prometheus** scraping your Dingo node on port `12798` (configured in step 2 below)
-- **Dingo** node with metrics enabled (default port `12798`)
+- **Dingo** node with metrics enabled (default port `12798`, bound to loopback; remote scraping sets `metricsBindAddr`, uses `metricsAuthToken`, and carries the plain HTTP listener through a TLS reverse proxy or authenticated encrypted tunnel)
 - **[Business Text plugin](https://grafana.com/grafana/plugins/marcusolsson-dynamictext-panel/)** — required by all dashboards for the header panel
 - **[prometheus-node-exporter](https://github.com/prometheus/node_exporter)** — required only by the Resource Usage dashboard for host-level CPU, memory, and disk metrics
 
@@ -78,7 +79,7 @@ sudo chown -R grafana:grafana /var/lib/grafana/dashboards/dingo/
 sudo systemctl restart grafana-server
 ```
 
-After restarting, go to **Dashboards → Browse** in the Grafana UI and search for "Dingo". All five dashboards appear in a **Dingo** folder automatically.
+After restarting, go to **Dashboards → Browse** in the Grafana UI and search for "Dingo". All six dashboards appear in a **Dingo** folder automatically.
 
 **Note:** `allowUiUpdates: true` lets you edit dashboards in the Grafana UI, but changes will be overwritten on the next provision cycle (every 30 seconds). To make permanent edits, modify the JSON files directly.
 
@@ -93,6 +94,19 @@ Dashboards use your default Prometheus datasource automatically — see [Datasou
 ### 4. Alert rules (optional)
 
 The alert rules file is ready to use as-is — no editing required.
+
+To validate it after an edit:
+
+```bash
+promtool check rules docs/dashboards/alerts.yaml
+cd docs/dashboards && promtool test rules alerts_test.yaml
+```
+
+`check rules` only proves the file parses and the PromQL is well-formed.
+`test rules` replays synthetic series against the rules and asserts what
+fires, which is the only way to catch a rule that is valid but wrong — a
+counter pre-materialized at zero makes `rate() == 0` true from process
+start, so a liveness rule can alert against a perfectly healthy run.
 
 Copy the file to your Prometheus rules directory:
 
@@ -140,7 +154,7 @@ Set `$node_instance` to the hostname/port reported by your node_exporter scrape 
 
 ## Navigation
 
-Dashboard-level links at the top of each dashboard connect all 5 dashboards. Links preserve the selected time range and template variables.
+Dashboard-level links at the top of each dashboard connect all 6 dashboards. Links preserve the selected time range and template variables.
 
 ## Dormant metrics
 
@@ -153,8 +167,15 @@ Some metrics only emit when their feature is active. Panels display "No data" un
 | `dingo_metrics_blockForgingLatency_seconds_bucket` | Block is forged |
 | `cardano_node_metrics_remainingKESPeriods_int` | KES key is configured |
 | `dingo_forge_tip_gap_slots` | Forging is enabled |
+| `dingo_forge_opcert_counter_loaded` | Block producer credentials are loaded |
+| `dingo_forge_opcert_counter_onchain` | Block producer credentials are loaded; `NaN` until the ledger has applied a block carrying one of the pool's operational certificates. For a numeric value, the next certificate to issue carries this value plus one; when `NaN`, wait for a numeric on-chain value before calculating the next counter |
+| `dingo_forge_slots_per_kes_period` | Block producer credentials are loaded |
+| `dingo_forge_credentials_valid` | Block producer credentials are loaded; 0 when they could not sign at the current slot |
+| `dingo_forge_missed_leader_slots_total` | Forging is enabled; increments for each slot confirmed by leader selection without an adopted block of the node's own; excludes KES and tip safety refusals before leader selection |
 | `dingo_database_size_bytes` | Database stores are initialized |
 | `database_blob_*` | Badger blob store is active |
+| `dingo_metrics_leios_*` other than `dingo_metrics_leios_eb_wait_*` | Leios is active: the network is Musashi, `runMode` is `leios`, or the node starts in the Dijkstra era. The `eb_wait` series exist on every node and stay at zero without Leios |
+| `dingo_metrics_leios_forge_eb_*`, `dingo_forge_eb_*` | The node runs as a block producer. They exist at zero on every block producer, with or without Leios, and are absent on relays |
 
 ## File listing
 
@@ -165,9 +186,11 @@ docs/dashboards/
   peer-health.json         Peer Health dashboard
   mempool.json             Mempool dashboard
   resources.json           Resource Usage dashboard
+  leios.json               Leios dashboard
   provisioning.yaml        Grafana provisioning config
   prometheus.yaml          Prometheus scrape config snippet
   alerts.yaml              Prometheus alert rules
+  alerts_test.yaml         promtool test cases for alerts.yaml
   README.md                This file
 ```
 

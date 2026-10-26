@@ -57,10 +57,22 @@ func (n *Node) midnightIndexerConfig() midnightindexer.Config {
 		},
 		BlockIterator: func(startSlot, endSlot uint64, fn func(models.Block) error) error {
 			return database.ForEachBlockInRangeDB(
+				n.ctx,
 				n.db,
 				startSlot,
 				endSlot,
-				fn,
+				func(block models.Block) error {
+					// ID zero identifies synthetic storage blobs, not chain blocks.
+					if block.ID == 0 {
+						return nil
+					}
+					return fn(block)
+				},
+			)
+		},
+		CanonicalBlockIterator: func(startIndex, endIndex uint64, fn func(models.Block) error) error {
+			return database.ForEachCanonicalBlockByIndexRangeDB(
+				n.ctx, n.db, startIndex, endIndex, fn,
 			)
 		},
 		// Read the applied ledger tip straight from metadata rather than
@@ -76,6 +88,20 @@ func (n *Node) midnightIndexerConfig() midnightindexer.Config {
 				return 0, err
 			}
 			return tip.Point.Slot, nil
+		},
+		LedgerTipBlock: func() (*models.Block, error) {
+			tip, err := n.db.GetTip(nil)
+			if err != nil {
+				return nil, err
+			}
+			if len(tip.Point.Hash) == 0 {
+				return nil, nil
+			}
+			block, err := database.BlockByPoint(n.ctx, n.db, tip.Point)
+			if err != nil {
+				return nil, err
+			}
+			return &block, nil
 		},
 		FatalErrorFunc: func(err error) {
 			n.config.logger.Error(
