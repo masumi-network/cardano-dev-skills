@@ -278,6 +278,11 @@ sudo mv mithril-signer /opt/mithril
 
 #### Set up the service
 
+:::info
+For Signer in version **1.2.1 and later**, since protocol configuration is now **decentralized**, the mechanism to retrieve protocol configuration has changed.
+Setting up `PROTOCOL_CONFIGURATION_READER_ADAPTER_CONFIG` as described in the following steps will allow the signer to retrieve this information on the Cardano Chain.
+:::
+
 :::caution
 
 - `User=cardano`:
@@ -293,6 +298,7 @@ sudo mv mithril-signer /opt/mithril
   - `STORE_RETENTION_LIMIT`: if set, this will limit the number of records in some internal stores (5 is a good fit)
   - `ERA_READER_ADAPTER_TYPE=cardano-chain`: replace `cardano-chain` with the era reader adapter type used in your Mithril network
   - `ERA_READER_ADAPTER_PARAMS={"address": "...", "verification_key": "..."}`: replace `{"address": "...", "verification_key": "..."}` with the era reader parameters that you need to compute by running the command `jq -nc --arg address $(wget -q -O - **YOUR_ERA_READER_ADDRESS**) --arg verification_key $(wget -q -O - **YOUR_ERA_READER_VERIFICATION_KEY**) '{"address": $address, "verification_key": $verification_key}'`
+  - `PROTOCOL_CONFIGURATION_READER_ADAPTER_CONFIG`: JSON encoded parameters for the protocol configuration reader adapter. For `cardano-chain` type, compute using: `jq -nc --arg address $(wget -q -O - **YOUR_PROTOCOL_CONFIGURATION_READER_ADDRESS**) --arg verification_key $(wget -q -O - **YOUR_PROTOCOL_CONFIGURATION_READER_VERIFICATION_KEY**) '{"type": "cardano-chain", "address": $address, "verification_key": $verification_key}'` (URLs can be found in the [Network configurations](../getting-started/network-configurations.md))
   - `RELAY_ENDPOINT=http://192.168.1.50:3132` **(optional)**: this is the endpoint of the **Mithril relay**, which is required for **production** deployment only. For **naive** deployment, do not set this variable in your environment file.
 
 :::
@@ -307,6 +313,7 @@ Here is an **example** set of values for **release-mainnet** that will be used i
 - **YOUR_AGGREGATOR_ENDPOINT**: `https://aggregator.release-mainnet.api.mithril.network/aggregator`
 - **YOUR_ERA_READER_ADAPTER_TYPE**: `cardano-chain`
 - **YOUR_ERA_READER_ADAPTER_PARAMS**: `{"address": "addr1qy72kwgm6kypyc5maw0h8mfagwag8wjnx6emgfnsnhqaml6gx7gg4tzplw9l32nsgclqax7stc4u6c5dn0ctljwscm2sqv0teg", "verification_key": "5b31312c3133342c3231352c37362c3134312c3232302c3131312c3135342c36332c3233302c3131342c31322c38372c37342c39342c3137322c3133322c32372c39362c3138362c3132362c3137382c31392c3131342c33302c3234332c36342c3134312c3131302c38332c38362c31395d"}`
+- **PROTOCOL_CONFIGURATION_READER_ADAPTER_CONFIG**: `{"type": "cardano-chain", "address": "addr1v9lsegaw82vh9w37km08s8szleet6adw82xzl8wjujpcyxq84hq9a", "verification_key": "5b3134392c3133392c38352c38302c32342c3130352c3130382c3138332c33352c33382c33382c34342c37332c3130312c3136392c35352c372c37382c302c3136372c3231302c31392c31392c3138372c3134312c37352c3134352c36392c31312c3234382c3132322c31305d"}`
 - **YOUR_RELAY_ENDPOINT**: `192.168.1.50`
 - **YOUR_RELAY_LISTENING_PORT**: `3132`
 - **YOUR_BLOCK_PRODUCER_INTERNAL_IP**: `192.168.1.75`
@@ -333,6 +340,7 @@ DATA_STORES_DIRECTORY=/opt/mithril/stores
 STORE_RETENTION_LIMIT=5
 ERA_READER_ADAPTER_TYPE=**YOUR_ERA_READER_ADAPTER_TYPE**
 ERA_READER_ADAPTER_PARAMS=**YOUR_ERA_READER_ADAPTER_PARAMS**
+PROTOCOL_CONFIGURATION_READER_ADAPTER_CONFIG=**YOUR_PROTOCOL_CONFIGURATION_READER_ADAPTER_CONFIG**
 RELAY_ENDPOINT=**YOUR_RELAY_ENDPOINT**
 EOF'
 ```
@@ -355,6 +363,7 @@ DATA_STORES_DIRECTORY=/opt/mithril/stores
 STORE_RETENTION_LIMIT=5
 ERA_READER_ADAPTER_TYPE=cardano-chain
 ERA_READER_ADAPTER_PARAMS={"address": "addr1qy72kwgm6kypyc5maw0h8mfagwag8wjnx6emgfnsnhqaml6gx7gg4tzplw9l32nsgclqax7stc4u6c5dn0ctljwscm2sqv0teg", "verification_key": "5b31312c3133342c3231352c37362c3134312c3232302c3131312c3135342c36332c3233302c3131342c31322c38372c37342c39342c3137322c3133322c32372c39362c3138362c3132362c3137382c31392c3131342c33302c3234332c36342c3134312c3131302c38332c38362c31395d"}
+PROTOCOL_CONFIGURATION_READER_ADAPTER_CONFIG={"type": "cardano-chain", "address": "addr1v9lsegaw82vh9w37km08s8szleet6adw82xzl8wjujpcyxq84hq9a", "verification_key": "5b3134392c3133392c38352c38302c32342c3130352c3130382c3138332c33352c33382c33382c34342c37332c3130312c3136392c35352c372c37382c302c3136372c3231302c31392c31392c3138372c3134312c37352c3134352c36392c31312c3234382c3132322c31305d"}
 RELAY_ENDPOINT=http://192.168.1.50:3132
 EOF'
 ```
@@ -377,6 +386,7 @@ DATA_STORES_DIRECTORY=/opt/mithril/stores
 STORE_RETENTION_LIMIT=5
 ERA_READER_ADAPTER_TYPE=**YOUR_ERA_READER_ADAPTER_TYPE**
 ERA_READER_ADAPTER_PARAMS=**YOUR_ERA_READER_ADAPTER_PARAMS**
+PROTOCOL_CONFIGURATION_READER_ADAPTER_CONFIG=**YOUR_PROTOCOL_CONFIGURATION_READER_ADAPTER_CONFIG**
 EOF'
 ```
 
@@ -398,6 +408,7 @@ DATA_STORES_DIRECTORY=/opt/mithril/stores
 STORE_RETENTION_LIMIT=5
 ERA_READER_ADAPTER_TYPE=cardano-chain
 ERA_READER_ADAPTER_PARAMS={"address": "addr1qy72kwgm6kypyc5maw0h8mfagwag8wjnx6emgfnsnhqaml6gx7gg4tzplw9l32nsgclqax7stc4u6c5dn0ctljwscm2sqv0teg", "verification_key": "5b31312c3133342c3231352c37362c3134312c3232302c3131312c3135342c36332c3233302c3131342c31322c38372c37342c39342c3137322c3133322c32372c39362c3138362c3132362c3137382c31392c3131342c33302c3234332c36342c3134312c3131302c38332c38362c31395d"}
+PROTOCOL_CONFIGURATION_READER_ADAPTER_CONFIG={"type": "cardano-chain", "address": "addr1v9lsegaw82vh9w37km08s8szleet6adw82xzl8wjujpcyxq84hq9a", "verification_key": "5b3134392c3133392c38352c38302c32342c3130352c3130382c3138332c33352c33382c33382c34342c37332c3130312c3136392c35352c372c37382c302c3136372c3231302c31392c31392c3138372c3134312c37352c3134352c36392c31312c3234382c3132322c31305d"}
 EOF'
 ```
 
@@ -441,6 +452,23 @@ Register the service to start on boot:
 ```bash
 sudo systemctl enable mithril-signer
 ```
+
+:::tip
+
+If you deployed the signer with the [guild-operators](https://github.com/cardano-community/guild-operators) scripts (`mithril-signer.sh -d`), the `cnode-mithril-signer.service` is bound to `cnode.service` but installed under `multi-user.target`: stopping and then starting the Cardano node leaves the signer stopped.
+
+The fix is being deployed by the guild-operators ([PR #1915](https://github.com/cardano-community/guild-operators/pull/1915)): once it is available, update your scripts and run `mithril-signer.sh -d` again.
+
+In the meantime, install the signer service under the Cardano node service and start it (replace `cnode` with your `CNODE_VNAME` if you changed it):
+
+```bash
+sudo sed -i 's/^WantedBy=multi-user.target$/WantedBy=cnode.service/' /etc/systemd/system/cnode-mithril-signer.service
+sudo systemctl daemon-reload
+sudo systemctl reenable cnode-mithril-signer.service
+sudo systemctl start cnode-mithril-signer.service
+```
+
+:::
 
 Monitor the status of the service:
 
@@ -981,7 +1009,7 @@ The DMQ node is supported on the `release-mainnet`, `release-preprod` and `pre-r
 
 You can use these parameters for all the supported networks:
 
-- **DMQ_RELEASE_URL**: `https://github.com/IntersectMBO/dmq-node/releases/download/0.7.0.0/dmq-node-linux.tar.gz`
+- **DMQ_RELEASE_URL**: `https://github.com/IntersectMBO/dmq-node/releases/download/0.7.2.0/dmq-node-linux.tar.gz`
 
 _These URLs may change in the future; please refer to this page for the latest released version of the DMQ node binary._
 
@@ -1500,11 +1528,11 @@ This step is **optional** but **recommended**. It allows other DMQ nodes of the 
 
 :::
 
-[CIP-155](https://cips.cardano.org/cip/CIP-0155) defines a registry of `SRV` record prefixes that decentralized protocols can use to publish their service endpoints on the Cardano ledger. By declaring an `SRV` record with the `_mithril._tcp` prefix on your pool relay domain, your DMQ relay node becomes discoverable as a **ledger peer** by any DMQ node that uses ledger peers.
+[CIP-155](https://cips.cardano.org/cip/CIP-0155) defines a registry of `SRV` record prefixes that decentralized protocols can use to publish their service endpoints on the Cardano ledger. By declaring an `SRV` record with the `_dmq._mithril._cardano._tcp` prefix on your pool relay domain, your DMQ relay node becomes discoverable as a **ledger peer** by any DMQ node that uses ledger peers.
 
 The declaration requires two steps:
 
-1. Publish an `SRV` record for your **relay** DMQ node under the `_mithril._tcp` prefix of your pool domain.
+1. Publish an `SRV` record for your **relay** DMQ node under the `_dmq._mithril._cardano._tcp` prefix of your pool domain.
 2. Register your pool domain as a multi-host relay in your stake pool registration certificate.
 
 :::caution
@@ -1521,10 +1549,10 @@ Here is the needed information to declare your DMQ node as a ledger peer:
 
 #### Publish the SRV record
 
-Add an `SRV` record to the DNS zone of your pool domain so that `_mithril._tcp.**YOUR_SPO_DOMAIN_NAME**` points to your DMQ relay node:
+Add an `SRV` record to the DNS zone of your pool domain so that `_dmq._mithril._cardano._tcp.**YOUR_SPO_DOMAIN_NAME**` points to your DMQ relay node:
 
 ```
-_mithril._tcp.**YOUR_SPO_DOMAIN_NAME**. 86400 IN SRV 10 5 **YOUR_DMQ_NODE_RELAY_PORT** **YOUR_DMQ_NODE_RELAY_PUBLIC_HOSTNAME**.
+_dmq._mithril._cardano._tcp.**YOUR_SPO_DOMAIN_NAME**. 86400 IN SRV 10 5 **YOUR_DMQ_NODE_RELAY_PORT** **YOUR_DMQ_NODE_RELAY_PUBLIC_HOSTNAME**.
 ```
 
 :::tip
@@ -1532,7 +1560,7 @@ _mithril._tcp.**YOUR_SPO_DOMAIN_NAME**. 86400 IN SRV 10 5 **YOUR_DMQ_NODE_RELAY_
 Here is an example for the pool domain `example.com`, with the DMQ relay node reachable at `cardano.example.com` on port `6161`:
 
 ```
-_mithril._tcp.example.com. 86400 IN SRV 10 5 6161 cardano.example.com.
+_dmq._mithril._cardano._tcp.example.com. 86400 IN SRV 10 5 6161 cardano.example.com.
 ```
 
 The values after `SRV` are the standard priority (`10`), weight (`5`), port (`6161`), and target hostname (`cardano.example.com`). More information is available in [RFC 2782](https://datatracker.ietf.org/doc/html/rfc2782).
@@ -1551,7 +1579,7 @@ cardano-cli latest stake-pool registration-certificate \
 
 :::info
 
-The `_cardano._tcp` prefix is used by the Cardano node to discover Cardano relays on the same domain, while the `_mithril._tcp` prefix is used by the DMQ node to discover Mithril DMQ relays. Both prefixes can coexist on the same pool domain.
+The `_cardano._tcp` prefix is used by the Cardano node to discover Cardano relays on the same domain, while the `_dmq._mithril._cardano._tcp` prefix is used by the DMQ node to discover Mithril DMQ relays. Both records can coexist on the same pool domain.
 
 :::
 
