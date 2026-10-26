@@ -232,11 +232,11 @@ The composer assertions surface two classes of finding:
 ## Validation evidence
 
 The tx-generator image promoted to
-[`cardano_node_master`](../testnets/cardano-node-master.md) is
+[`cardano-node-releases`](../testnets/cardano-node-releases.md) is
 `tx-generator:69bf815`, referenced from downstream commit `4687a09`.
 It was validated on a dedicated `cardano_node_tx_generator` testnet
 before promotion (since removed; the workload now lives directly in
-`cardano_node_master`).
+`cardano-node-releases`).
 
 | Evidence | Value |
 |----------|-------|
