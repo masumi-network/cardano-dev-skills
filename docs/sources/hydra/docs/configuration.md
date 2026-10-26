@@ -71,6 +71,7 @@ chain:
   deposit-activation: 3600
   backend:
     mode: direct
+    testnet-magic: 2
     node-socket: "node.socket"
 ```
 
@@ -80,7 +81,7 @@ The self entry (`127.0.0.1:5001` here) carries keys like every other peer — th
 
 #### Mirror nodes
 
-A **mirror node** observes the head without holding signing keys. To set one up, add the mirror's address to every participant's peer list **without** any verification keys:
+A **mirror node** runs another instance of an existing party using the same signing keys. It adds an etcd peer, not another Hydra party. Add its address to the other nodes' peer lists **without** repeating that party's verification keys:
 
 ```yaml
 # in alice.yaml, bob.yaml, carol.yaml
@@ -118,19 +119,22 @@ peers:
   - address: "127.0.0.1:5004"          # self — filtered out automatically
     hydra-verification-key: "alice.vk"
     cardano-verification-key: "alice.cardano.vk"
+ledger-protocol-parameters: "protocol-parameters.json"
 persistence-dir: "persistence/alice-mirror"
 chain:
   mode: cardano
+  network: preview
   cardano-signing-key: "alice.cardano.sk"
   contestation-period: 43200
   deposit-period: 3600
   deposit-activation: 3600
   backend:
     mode: direct
+    testnet-magic: 2
     node-socket: "node.socket"
 ```
 
-Run both nodes side by side:
+Run each node in a separate terminal:
 
 ```shell
 hydra-node --config alice.yaml
@@ -188,6 +192,14 @@ The contestation period is used to set the **contestation deadline**. That is, a
 :::important Consistent contestation period
 
 Being a protocol parameter, all participants in a head must configure the same `--contestation-period` value. Otherwise, the `Init` transaction will be ignored, preventing any participant from stalling or causing a denial-of-service (DoS) attack by setting an unreasonably large contestation period.
+
+:::
+
+:::important Positive periods
+
+A non-positive contestation period is rejected when the `hydra-node` starts, whether it comes from `--contestation-period` or from a configuration file. Note that `--contestation-period` rounds a fractional value up to the next whole second (`60.5s` becomes `61s`), while a configuration file accepts whole seconds only, so prefer whole seconds everywhere, since all participants must end up with the same value.
+
+On-chain the field is unconstrained: the head minting policy checks neither its sign nor its precision, so an `Init` transaction can carry a zero, negative or fractional contestation period. A `hydra-node` and a `hydra-chain-observer` ignore any `Init` whose contestation period is not a positive whole number of seconds. Rejecting rather than rounding is deliberate: a rounded value would match a participant's configuration, so the head would be joined, and could then never be closed, because the closing transaction writes the rounded value back and the head validator requires it to equal what the opening datum held. The deposit period below is treated the same way, except that zero is allowed for it.
 
 :::
 
@@ -258,10 +270,10 @@ The API server notifies clients whenever the node falls out of sync or returns t
 If the default behavior (half the contestation period) does not fit your use case, you can explicitly configure the unsynced period using the `--unsynced-period` option:
 
 ```
-hydra-node --unsynced-period 3600
+hydra-node --unsynced-period 3600s
 ```
 
-This sets the period (in seconds) after which the node considers itself out of sync with the chain. For example, with `--unsynced-period 3600`, if no new block is observed for 1 hour, the node will transition to the "catching up" state.
+This sets the period (in seconds) after which the node considers itself out of sync with the chain. For example, with `--unsynced-period 3600s`, if no new block is observed for 1 hour, the node will transition to the "catching up" state.
 
 :::warning
 The unsynced period should generally be shorter than the contestation period to ensure safety. Setting it too large may cause the node to continue processing L2 transactions when it can no longer safely enforce them on L1.
@@ -285,6 +297,8 @@ Anyone can submit a deposit transaction that targets a given head. Each deposit 
 
 For a deposit to be considered by the `hydra-node` the deadline must be further out than `now + DP`.
 
+`--deposit-period` must be a non-negative whole number of milliseconds, the precision the on-chain datum records. `--deposit-activation` must be non-negative, at any precision. `0s` is allowed for both: it removes the period margin or the extra maturation delay after the transaction's upper validity bound, respectively. A negative duration is rejected at startup, as is a negative deposit period observed in a head's datum.
+
 ### Deposit activation
 
 The deposit activation (DA) controls **only** how long a deposit must mature before it transitions from `Inactive` to `Active` and can be incremented into the head. It is independent from the deposit period and defaults to `3600s`.
@@ -293,13 +307,13 @@ The deposit activation (DA) controls **only** how long a deposit must mature bef
 hydra-node --deposit-activation 1800s
 ```
 
-The `hydra-node` picks the deadline `now + DA + 2 * DP` for any deposit transactions created through `POST /commit`. This splits the lifetime of a deposit into three independent windows:
+The `hydra-node` picks the deadline `now + DA + 2 * DP` for any deposit transactions created through `POST /commit`. The node measures maturity from the transaction's upper validity bound, which is later than drafting time. The lifecycle has three windows:
 
-- **maturity** (`DA`): time before the deposit becomes active,
-- **active** (`DP`): time during which the deposit can be incremented,
-- **recovery** (`DP`): time before the deadline during which the deposit can no longer be incremented but is not yet recoverable.
+- **Maturity**: until the upper validity bound plus `DA`.
+- **Active**: from maturity until `deadline - DP`.
+- **Expiry margin**: the final `DP` before the deadline, when the node stops proposing the deposit but recovery is not yet allowed.
 
-For example, with `--deposit-activation 1800s` and `--deposit-period 3600s`, a deposit is picked up after 30 minutes, can be incremented until 1.5 hours, and may be recovered by the user after 2.5 hours.
+For example, with `--deposit-activation 1800s` and `--deposit-period 3600s`, a deposit becomes active roughly 30 minutes after drafting, plus the upper-validity offset. It remains eligible until 1.5 hours after drafting and can be recovered after 2.5 hours. These are eligibility windows; actual settlement also requires all parties to agree and an increment to land on L1.
 
 Keeping the default `3600s` for both flags reproduces the previous behaviour where the deadline was `now + 3 * DP`. Like the deposit period, all nodes in a head should configure identical values.
 
@@ -310,7 +324,7 @@ See the [how-to](./how-to/incremental-commit) and [protocol documentation](./dev
 The `hydra-node` uses reference scripts to reduce transaction sizes driving the head's lifecycle. Specify the `--hydra-scripts-tx-id` to reference the correct scripts. The `hydra-node` will verify the availability of these scripts on-chain.
 
 :::important Alternative: use --network
-Since we pre-publish hydra scrips before each release, instead of specifying hydra-scripts using `--hydra-scripts-tx-id`, you can use `--network` together with the network name you would like to run your hydra-node on (e.g. `--network preview`).
+Use `--network preview`, `--network preprod`, or `--network mainnet` to select the scripts published for your Hydra release. This selects script transaction IDs only. Also set the chain connection to the matching network: `--testnet-magic 2`, `--testnet-magic 1`, or `--mainnet`, respectively. In YAML, set `chain.backend.testnet-magic` or `chain.backend.mainnet`.
 :::
 
 :::warning
@@ -409,7 +423,7 @@ To specify how to connect to the local `cardano-node`, use `--node-socket` and `
 ```shell
 hydra-node \
   --testnet-magic 42 \
-  --node-socket devnet/node.socket \
+  --node-socket devnet/node.socket
 ```
 
 #### Through Blockfrost
@@ -418,7 +432,7 @@ If you decide to use `Blockfrost` service then hydra-node is started with provid
 
 ```shell
 hydra-node \
-  --blockfrost blockfrost-project.txt \
+  --blockfrost blockfrost-project.txt
 ```
 
 :::info
@@ -470,6 +484,9 @@ hydra-node \
   --hydra-signing-key demo/alice.sk \
   --ledger-protocol-parameters hydra-cluster/config/protocol-parameters.json
 ```
+
+Offline mode first opens an empty head, then simulates depositing the initial
+UTxO. Wait for `CommitFinalized` before spending those outputs.
 
 As the node is not connected to a real network, genesis parameters that normally influence things like time-based transaction validation cannot be fetched and are set to defaults. To configure block times, set `--ledger-genesis` to a Shelley genesis file similar to the [shelley-genesis.json](https://book.world.dev.cardano.org/environments/mainnet/shelley-genesis.json).
 
@@ -540,13 +557,14 @@ The response exposes **absolute filesystem paths** to signing keys, sockets, and
 
 Since switching to the [`etcd`-backed network configuration](https://github.com/cardano-scaling/hydra/pull/1854), the system is more resiliant to nodes going offline.
 
-By default, the network stack keeps **1000** messages which other nodes may be picking up after being offline.
+By default, etcd compaction retains **1000 revisions**. A revision can contain a batch of Hydra messages, so this is not a fixed message count or offline duration.
 
-You can override this by setting the relevant `etcd` [environment variables](https://etcd.io/docs/v3.4/op-guide/configuration/). For example, to configure retention of 7 days worth of network messages, in the call to running hydra-node, you can define:
+You can override this by setting the relevant `etcd` [environment variables](https://etcd.io/docs/v3.6/op-guide/configuration/). For example, to configure retention of 7 days worth of network messages, in the call to running hydra-node, you can define:
 
 ```
-ETCD_AUTO_COMPACTION_MODE=periodic
-ETCD_AUTO_COMPACTION_RETENTION=168h
+export ETCD_AUTO_COMPACTION_MODE=periodic
+export ETCD_AUTO_COMPACTION_RETENTION=168h
+hydra-node --config alice.yaml
 ```
 
 ### Network protocol version and upgrades
@@ -568,7 +586,7 @@ shares cores with other latency-sensitive processes (such as cardano-node), the
 pool size can be bounded via the environment:
 
 ```
-RAYON_NUM_THREADS=2
+export RAYON_NUM_THREADS=2
 ```
 
 This trades some per-snapshot signing latency on large UTxO sets for less
