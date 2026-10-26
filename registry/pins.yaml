@@ -86,5 +86,5 @@
 "cardano-client-lib": ea79ceea11ce02a350575a9e78ad217330f3de21
 "cardano-js-sdk": 1a08af20cba29de7798cc96f76e707796b92607b
 "gOuroboros": a2a52f8843933f66aa584554e40893594932e4c9
-"haskell.nix": 86b5ca02e422c728d8f2687e6c3153680fbf402a
+"haskell.nix": f5818bb1bcd468097cd0152016fcaac5b034e2c4
 "iohk-nix": af463a46dbe9c6e2db6b2639c0f35f5689e0c3a8
