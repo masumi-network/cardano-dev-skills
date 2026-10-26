@@ -1,7 +1,7 @@
 use aiken/collection/dict.{Dict}
 use aiken/collection/list
 use cardano/address
-use cardano/assets.{PolicyId, Value}
+use cardano/assets.{Assets, PolicyId}
 use cardano/transaction.{
   DatumHash, Input, Mint, NoDatum, Output, OutputReference, ScriptPurpose,
   Transaction,
@@ -17,6 +17,8 @@ const void_hash =
 
 validator test_1 {
   mint(_rdmr: Data, our_policy_id: PolicyId, transaction: Transaction) {
+    trace @"002"
+
     let other_policy_id = assert_redeemers(transaction.redeemers)
 
     assert_outputs(transaction.outputs, our_policy_id, other_policy_id)
@@ -115,7 +117,7 @@ fn assert_outputs(
   Void
 }
 
-fn assert_mint(mint: Value, our_policy_id: PolicyId, other_policy_id: PolicyId) {
+fn assert_mint(mint: Assets, our_policy_id: PolicyId, other_policy_id: PolicyId) {
   expect
     [
       (other_policy_id, "aiken", -14),
@@ -136,7 +138,7 @@ fn assert_mint(mint: Value, our_policy_id: PolicyId, other_policy_id: PolicyId) 
 ///
 validator test_2 {
   mint(_tmp2: Void, _policy_id: PolicyId, _transaction: Transaction) {
-    trace @"000"
+    trace @"1"
     True
   }
 
