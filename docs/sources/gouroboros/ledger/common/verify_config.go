@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"fmt"
+	"math/big"
 
 	"github.com/blinklabs-io/gouroboros/cbor"
 	"golang.org/x/crypto/blake2b"
@@ -48,6 +49,7 @@ const (
 	ValidationErrorTypeStakePool     ValidationErrorType = "stake_pool"
 	ValidationErrorTypeVRF           ValidationErrorType = "vrf"
 	ValidationErrorTypeKES           ValidationErrorType = "kes"
+	ValidationErrorTypeOpCert        ValidationErrorType = "opcert"
 	ValidationErrorTypeProtocol      ValidationErrorType = "protocol"
 	ValidationErrorTypeConfiguration ValidationErrorType = "configuration"
 )
@@ -105,9 +107,10 @@ type VerifyConfig struct {
 	// This is for callers that need to distinguish a representable block from
 	// a validation failure before applying their own validation.
 	SkipHeaderValidation bool
-	// SkipBodyHashValidation disables body hash verification in VerifyBlock().
-	// When false (default), full block CBOR must be available for validation.
-	// Useful for scenarios where full block CBOR is unavailable.
+	// SkipBodyHashValidation disables block body integrity verification in
+	// VerifyBlock(), including the signed body size and body hash checks. When
+	// false (default), full block CBOR must be available for validation. Useful
+	// for scenarios where full block CBOR is unavailable.
 	SkipBodyHashValidation bool
 	// SkipTransactionValidation disables transaction validation in VerifyBlock().
 	// When false (default), LedgerState and ProtocolParameters must be set.
@@ -122,87 +125,47 @@ type VerifyConfig struct {
 	// ppMaxBlockBodySize/ppMaxBlockHeaderSize). Unlike the other Skip*
 	// flags, this check does not require LedgerState and runs independently
 	// of SkipTransactionValidation: it only needs ProtocolParameters (for
-	// the limits) and, for the size checks, the block's raw CBOR. It is a
-	// no-op when ProtocolParameters is nil or the block has neither
-	// transactions nor raw CBOR available.
+	// the limits) and, for the size checks, the block's raw CBOR. It returns a
+	// validation failure when ProtocolParameters is nil and is a no-op only
+	// when transactions, raw block CBOR, and header CBOR are all unavailable.
 	SkipBlockLimitsValidation bool
-	// EnableByronSscProofHashValidation opts into recomputing and comparing
-	// a Byron main block's ssc_proof hashes against its header, in addition
-	// to the always-on structural check of that field (proof type, element
-	// counts, and the wire shape -- tag-258 set vs. genuine CBOR map -- of
-	// every field it hashes).
-	//
-	// Default false: unlike tx_proof/dlg_proof/upd_proof, ssc_proof has no
-	// upstream reference implementation to cross-check this package's own
-	// hash construction against. Modern cardano-ledger decodes SscProof as
-	// a unit type and re-encodes a hardcoded placeholder regardless of the
-	// block's actual SSC content, so cardano-node itself would accept a
-	// block whose ssc_proof this check might reject -- the "mainnet has run
-	// on cardano-node for years" safety net that justifies enforcing
-	// tx_proof/dlg_proof/upd_proof unconditionally does not apply here. The
-	// hash construction itself (see ledger/byron's checkSscProofCore) is
-	// confirmed against a small number of real mainnet blocks -- roughly
-	// 4-5 blocks, covering only two of the four SSC payload types
-	// (CommitmentsPayload and OpeningsPayload) but exercising three of the
-	// four distinct hash constructions those payloads use (the
-	// commitments-field, openings-field, and certificates-field hashes;
-	// the CommitmentsPayload vector happens to also carry a non-empty
-	// certificate set). SharesPayload's hash construction has no
-	// confirmed non-empty vector and is inferred only by code-path
-	// identity with the proven Openings case -- see ledger/byron's
-	// checkSscProofLocal doc comment -- out of Byron's
-	// ~5,000,000 total blocks and 208 epochs -- and two real encoding bugs
-	// were found and fixed in it during the same development round that
-	// produced those vectors, which is evidence the construction is subtle
-	// rather than settled. Making that comparison decode-gating by default
-	// would mean any undiscovered edge case turns into a real, unrelated
-	// mainnet block failing to decode. Set this to true to opt into the
-	// full hash comparison once broader evidence justifies treating a
-	// mismatch as fatal for real blocks; until then, decode-gating callers
-	// (e.g. NewByronMainBlockFromCbor) leave it off and rely on the
-	// structural check alone.
-	EnableByronSscProofHashValidation bool
-	// EnableByronPayloadValidation opts into structurally validating a
-	// Byron main block's delegation and update payloads and verifying the
-	// signatures they carry -- heavyweight delegation certificates, update
-	// proposals, and update votes -- in addition to the always-on check
-	// that those payloads' bytes hash to the dlg_proof/upd_proof in the
-	// header.
-	//
-	// Those two checks answer different questions. dlg_proof and upd_proof
-	// bind the payload bytes to the header, so a block cannot carry a
-	// payload its issuer did not commit to; they say nothing about whether
-	// those bytes decode to a well-formed certificate, or whether the
-	// signature inside one verifies. A block whose delegation payload holds
-	// a certificate with a truncated verification key, or a vote signed by
-	// a key that did not sign it, passes the proof check unchanged.
-	//
-	// Default false, for the same reason as
-	// EnableByronSscProofHashValidation: the update proposal and vote
-	// signing formats reproduced here (see ledger/byron's
-	// ByronUpdateProposal.Validate and UpdateVote.Verify) are taken from
-	// cardano-ledger-byron's Cardano.Chain.Update sources rather than
-	// confirmed against real mainnet blocks carrying those payloads, which
-	// are rare enough that this repository has no such vector. Making them
-	// decode-gating by default would risk an undiscovered edge case turning
-	// into a real mainnet block that fails to decode. The delegation
-	// certificate half is on firmer ground -- its signing format is the
-	// same one consensus/byron already verifies against a real mainnet
-	// certificate on every proxy-signed header -- but the flag covers both
-	// so that opting in is a single, coherent decision.
-	//
-	// Callers who want only the delegation half without the update half can
-	// call byron.ByronMainBlock.ValidateDelegationPayload directly.
-	EnableByronPayloadValidation bool
 	// LedgerState provides the current ledger state for transaction validation.
 	// Required if SkipTransactionValidation or SkipStakePoolValidation is false.
 	LedgerState LedgerState
 	// ProtocolParameters provides the current protocol parameters for
 	// transaction validation and block-limits validation.
-	// Required if SkipTransactionValidation is false. When set and
+	// Required for Shelley-family transaction validation when
+	// SkipTransactionValidation is false. When set and
 	// SkipBlockLimitsValidation is false, also enables block-wide
 	// execution-unit and size validation (see SkipBlockLimitsValidation).
 	ProtocolParameters ProtocolParameters
+	// ByronTxFeePolicy is the Byron linear transaction fee policy. It is
+	// required for Byron transaction validation when SkipTransactionValidation
+	// is false; validation fails closed when it is nil.
+	ByronTxFeePolicy *ByronTxFeePolicy
+}
+
+// ByronTxFeePolicy is the Byron TxSizeLinear fee policy. Both values are in
+// nano-lovelace (1e-9 lovelace), the unit used by the Byron genesis
+// txFeePolicy, so the minimum fee for a transaction of size bytes is
+// ceil((Summand + Multiplier*size) / 1e9) lovelace.
+type ByronTxFeePolicy struct {
+	Summand    uint64
+	Multiplier uint64
+}
+
+// MinFee returns the minimum fee in lovelace for a serialized transaction of
+// txSize bytes.
+func (p ByronTxFeePolicy) MinFee(txSize int) *big.Int {
+	total := new(big.Int).SetUint64(p.Multiplier)
+	total.Mul(total, big.NewInt(int64(txSize)))
+	total.Add(total, new(big.Int).SetUint64(p.Summand))
+	denominator := big.NewInt(1_000_000_000)
+	quotient, remainder := new(big.Int).QuoRem(total, denominator, new(big.Int))
+	if remainder.Sign() > 0 {
+		quotient.Add(quotient, big.NewInt(1))
+	}
+	return quotient
 }
 
 // ValidateBlockBodyHash validates the block body hash during parsing.

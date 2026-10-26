@@ -31,6 +31,7 @@ import (
 	"github.com/blinklabs-io/gouroboros/protocol/localtxmonitor"
 	"github.com/blinklabs-io/gouroboros/protocol/localtxsubmission"
 	"github.com/blinklabs-io/gouroboros/protocol/peersharing"
+	"github.com/blinklabs-io/gouroboros/protocol/perasvotes"
 	"github.com/blinklabs-io/gouroboros/protocol/txsubmission"
 )
 
@@ -199,24 +200,32 @@ func WithKeepAliveConfig(cfg keepalive.Config) ConnectionOptionFunc {
 	}
 }
 
-// WithLeiosFetchConfig specifies LeiosFetch protocol config
+// WithLeiosFetchConfig enables LeiosFetch and specifies its protocol config.
 func WithLeiosFetchConfig(cfg leiosfetch.Config) ConnectionOptionFunc {
 	return func(c *Connection) {
 		c.leiosFetchConfig = &cfg
 	}
 }
 
-// WithLeiosNotifyConfig specifies LeiosNotify protocol config
+// WithLeiosNotifyConfig enables LeiosNotify and specifies its protocol config.
 func WithLeiosNotifyConfig(cfg leiosnotify.Config) ConnectionOptionFunc {
 	return func(c *Connection) {
 		c.leiosNotifyConfig = &cfg
 	}
 }
 
-// WithLeiosVotesConfig specifies LeiosVotes protocol config
+// WithLeiosVotesConfig enables LeiosVotes and specifies its protocol config.
 func WithLeiosVotesConfig(cfg leiosvotes.Config) ConnectionOptionFunc {
 	return func(c *Connection) {
 		c.leiosVotesConfig = &cfg
+	}
+}
+
+// WithPerasVotesConfig opts into Peras vote diffusion on a node-to-node
+// connection. Protocol 17 starts only when both peers negotiate Peras support.
+func WithPerasVotesConfig(cfg perasvotes.Config) ConnectionOptionFunc {
+	return func(c *Connection) {
+		c.perasVotesConfig = &cfg
 	}
 }
 

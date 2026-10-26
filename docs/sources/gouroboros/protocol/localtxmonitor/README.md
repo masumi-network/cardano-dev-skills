@@ -87,11 +87,14 @@ The LocalTxMonitor protocol monitors the local node's mempool. It allows clients
 | `GetSizes` | Busy |
 
 ### From Busy (Server Agency)
-| Message | New State |
-|---------|-----------|
-| `ReplyHasTx` | Acquired |
-| `ReplyNextTx` | Acquired |
-| `ReplyGetSizes` | Acquired |
+| Message | New State | Accepted after |
+|---------|-----------|----------------|
+| `ReplyHasTx` | Acquired | `HasTx` |
+| `ReplyNextTx` | Acquired | `NextTx` |
+| `ReplyGetSizes` | Acquired | `GetSizes` |
+
+Busy accepts only the reply to the query that entered it. Any other reply is a
+protocol error and is refused before the transition to Acquired.
 
 ## Timeouts
 
@@ -116,8 +119,8 @@ localtxmonitor.NewConfig(
 // Acquire mempool snapshot
 err := client.Acquire()
 
-// Check if specific transaction is in mempool
-hasTx, err := client.HasTx(txId)
+// Check if a transaction from a specific era is in the mempool
+hasTx, err := client.HasTxForEra(eraId, txId)
 
 // Iterate through mempool transactions
 for {
@@ -147,5 +150,5 @@ The `GetSizes` query returns:
 - Mempool snapshot is consistent during queries
 - Acquire again to get updated mempool state
 - NextTx iterates through all transactions in snapshot
-- HasTx checks for specific transaction by ID
+- HasTx checks for specific transaction by ID; the ID must be 32 bytes
 - Release snapshot when done to free resources

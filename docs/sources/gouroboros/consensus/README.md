@@ -1,6 +1,7 @@
 # Consensus Package
 
-This package provides Cardano consensus primitives for Ouroboros Praos, enabling block production and chain selection in pure Go.
+This package provides Cardano consensus primitives for Ouroboros Praos and
+Tachys, enabling block production and chain selection in pure Go.
 
 ## Why This Package Exists
 
@@ -14,19 +15,96 @@ This package provides these capabilities without external dependencies, enabling
 
 ## Components
 
-### Leader Election (`leader.go`, `threshold.go`)
+### Leader Election (`leader.go`, `eligibility.go`, `e34.go`)
 
-- `IsSlotLeader()` - Check if a pool is eligible to produce a block in a given slot
-- `CertifiedNatThreshold()` - Compute the leadership threshold based on stake ratio
-- `FindNextSlotLeadership()` - Look ahead for scheduling block production
+- `NewLeaderEligibility(poolStake, totalStake, f, mode)` prepares one immutable
+  evaluator for repeated decisions.
+- `CheckCertifiedNatural(v)` evaluates a natural in `[0, M]`.
+- `CheckVRFOutput(output)` evaluates exactly 64 raw VRF output bytes, without
+  verifying a proof.
+- `IsSlotLeader{,WithMode}()` signs a slot input and applies pool policy.
+- `FindNextSlotLeadership{,Context}()` searches an inclusive CPraos slot range
+  with one preparation and cancellation before preparation and each slot.
 
-The threshold formula is: `T = 2^512 * (1 - (1-f)^σ)` where `f` is the active slot coefficient and `σ` is the pool's relative stake.
+The executable rule is the pinned Haskell ledger's finite E34 predicate, not
+an ideal real-number cutoff. Values are signed integers scaled by `10^34`;
+every multiplication and division floors. Preparation converts `f` to E34
+before subtracting from one, preserves the finite active-slot logarithm, and
+floors the stake/log multiplication before negation. Only `BELOW` from the
+bounded exponential comparator elects. `ABOVE` and exhaustion of its fixed
+1000-iteration budget both return false, without a fallback or margin.
+
+| Mode | Certified natural | Maximum `M` |
+|------|-------------------|-------------|
+| CPraos (Babbage+) | Domain-separated BLAKE2b-256 leader hash | `2^256` |
+| TPraos (Shelley–Alonzo) | Unsigned big-endian raw output | `2^512` |
+
+`CheckCertifiedNatural` also accepts the artificial oracle endpoint `v=M`.
+Its quotient is `M*10^34`; this is arithmetic support only, never an N-bit
+serialization. Representable naturals instead use
+`floor(M*10^34/(M-v))`.
+
+The coefficient must be in `[1/10^19, 1]`, with reduced numerator and
+denominator fitting `uint64`. Exact rationals such as `1/3` are valid; large
+denominators and smaller positive coefficients are rejected, not rounded.
+The constructor rejects zero total stake and clamps pool stake above a
+positive total as existing gOuroboros policy, not a node-validation claim.
+Exact `f=1` accepts every valid low-level natural, including zero pool stake.
+Receiver, natural-range and raw-output-length checks still precede acceptance.
+
+Preparation retains no caller-owned rational or mutable scratch. A bounded
+4096-entry mutex-protected LRU caches successful private states by mode,
+clamped stake tuple and exact reduced coefficient. Computation occurs outside
+the lock; concurrent misses may duplicate it. Every constructor call returns
+a fresh wrapper, so overwriting one cannot corrupt another or the cache.
+Concurrent evaluator reads are supported; concurrent mutation of a caller's
+rational during construction or of the same wrapper is not.
+
+The election/component adapters deliberately differ from the primitive:
+zero pool or total stake returns false. Full election validates mode, signer,
+nonce, a nonnil coefficient, and the domain of positive coefficients before
+zero-stake policy; positive-stake calls with
+`f<=0` still generate and validate proof/output, then return false. Components
+return false for nil/nonpositive coefficients and malformed output, but reject
+unsupported positive coefficients even with zero stake or malformed output.
+Unknown modes always error; the no-error component wrapper suppresses errors.
+Search returns no leadership without signing for zero stake. With positive
+stake and a nonpositive coefficient, it still validates each slot and proof.
+Header validation rejects zero total/pool stake and invalid coefficients,
+then checks the same prepared predicate on the cryptographically verified
+output. These are library pool-policy gates, not additional Haskell claims.
+
+Independent shared fixtures under `ouroboros-mock/fixtures/upstream/e34`
+record pinned ledger/consensus/package provenance and checksums. Go tests
+read the embedded corpus; they neither fetch fixtures nor run Haskell.
+The corpus is not an installed-node replay.
 
 ### Block Construction (`block.go`)
 
 - `BlockBuilder` - Constructs block headers with proper VRF proofs and KES signatures
 - `BuildHeader()` - Creates a complete header for a new block
 - Helper types for header body, VRF results, and operational certificates
+
+### Tachys Leader Schedule (`tachys.go`)
+
+- `NewTachysLeaderSelector` prepares an immutable cumulative distribution in
+  lexicographic 28-byte pool ID order and rejects empty, duplicate, zero-stake,
+  inconsistent, or overflowing distributions.
+- `Leader` and `IsLeader` perform an O(log n) exact-integer lookup for an
+  absolute slot. `LeaderForSample` supports independent boundary vectors.
+- `IsTachysSlotLeader` and `NewTachysBlockBuilder` retain the CPraos VRF
+  certificate while replacing its private threshold lottery with the public
+  schedule.
+- `NewTachysHeaderValidator` replaces only issuer authorization. VRF proof,
+  KES, operational certificate, counter, and registered VRF key checks remain
+  the same as CPraos.
+
+The implementation pins CIP-0177 revision
+`86b89208d3b2aabb5dcc5b778dfbe09096b4e114`. The epoch nonce is 32 raw bytes,
+the absolute slot is an unsigned 64-bit big-endian value, and the sample is
+the unsigned big-endian value of `BLAKE2b-256(nonce || slot)`. Selection uses
+cross multiplication against cumulative stake, so inclusive lower and
+exclusive upper interval boundaries require no rational rounding or modulo.
 
 ### Chain Selection (`selection.go`)
 
@@ -53,7 +131,8 @@ The threshold formula is: `T = 2^512 * (1 - (1-f)^σ)` where `f` is the active s
   2. Block number is previous + 1
   3. Previous hash matches
   4. VRF proof is valid for the claimed slot
-  5. VRF output satisfies leadership threshold
+  5. Issuer authorization satisfies either the finite E34 Praos predicate or
+     a configured Tachys schedule
   6. KES period is within valid range
   7. KES signature is valid
 - `ValidationError` - Detailed error types with context for debugging
