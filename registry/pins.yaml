@@ -18,7 +18,7 @@
 # for a new source: unpinned content has no recorded provenance, and every
 # fetch re-resolves it to whatever the tip happens to be at the time.
 "Adder": 92ec552c0e6cef4d7b8deb458cdf424e1ed2fdfa
-"Aiken": 20b105bcdf4842f31f24e36a2b9b8013670765ff
+"Aiken": 7644b3879af2fc9d25df35249fb9b688c17238b1
 "Aiken BLS Signatures": 31fe5e6e0a1fa262c2d61579a41dae4cedf4eb61
 "Aiken Design Patterns": dab059406035ed30a9464211822b1e5520d21cfc
 "Aiken Examples": bd0e4e30c6d8f51221bd9aabf22cfeb794d72884
