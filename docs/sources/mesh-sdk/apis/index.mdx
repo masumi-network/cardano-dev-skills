@@ -1,6 +1,6 @@
 ---
 title: "Mesh SDK API Reference"
-description: "Build Cardano applications with Mesh's comprehensive SDK for wallets, transactions, data handling, and utilities."
+description: "Build Cardano applications with Mesh's comprehensive SDK for wallets, transactions, data handling, utilities, and x402 payments."
 ---
 
 import {
@@ -13,7 +13,7 @@ import Link from "next/link";
 
 ## Overview
 
-The Mesh SDK provides everything you need to build Cardano applications: wallet integrations, transaction builders, data serialization, and utility functions. Choose the APIs that fit your use case.
+The Mesh SDK provides everything you need to build Cardano applications: wallet integrations, transaction builders, data serialization, utility functions, and x402 payments. Choose the APIs that fit your use case.
 
 ## Quick Start
 
@@ -55,6 +55,7 @@ const txHash = await wallet.submitTx(signedTx);
 | [Transaction Parser](/apis/txparser) | Parse and test transaction data | `MeshTxParser`, `TxTester` |
 | [Data](/apis/data) | Handle Cardano data types and conversions | `MeshValue`, JSON/Mesh formats |
 | [Utilities](/apis/utilities) | Serialize, deserialize, and resolve data | Serializers, deserializers, resolvers |
+| [x402 Payments](/apis/x402) | Charge for an HTTP resource with Cardano | `fetchWithPayment`, `createPaywall`, `createFacilitatorApp` |
 
 ## Wallets
 
@@ -137,6 +138,23 @@ const policyId = resolveScriptHash(forgingScript);
 ```
 
 [Learn more about Utilities →](/apis/utilities)
+
+## x402 Payments
+
+Charge for an API or page with `@meshsdk/x402`. The server answers `402` with a price, the client signs a Cardano payment, and a facilitator settles it before the content is released.
+
+```tsx
+import { fetchWithPayment } from "@meshsdk/x402";
+
+const { response, paymentResponse } = await fetchWithPayment(
+  "http://localhost:3000/weather",
+  undefined,
+  wallet,
+  { fetcher: provider, protocol, currentSlot },
+);
+```
+
+[Learn more about x402 Payments →](/apis/x402)
 
 ## Available APIs
 
