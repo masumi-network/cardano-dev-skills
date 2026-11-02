@@ -73,7 +73,7 @@ volumes:
 `asteria-game:<short-sha>` whenever a commit touches
 `components/asteria-game/`. Pick the tag from any green
 `publish-images` run on `main`, or use the digest pinned by master
-in [`testnets/cardano_node_master/docker-compose.yaml`][master-compose].
+in [`testnets/cardano-node-releases/docker-compose.yaml`][master-compose].
 
 The composer scripts that drive the binaries are baked into the
 image at build time at `/opt/antithesis/test/v1/asteria-game/` - nothing extra
@@ -177,7 +177,7 @@ docker tag \
 
 ```bash
 INTERNAL_NETWORK=false docker compose \
-    -f testnets/cardano_node_master/docker-compose.yaml up -d
+    -f testnets/cardano-node-releases/docker-compose.yaml up -d
 ```
 
 The compose file declares one `asteria-game` service. Its main process
@@ -188,9 +188,9 @@ For a local container smoke:
 
 ```bash
 just logs asteria-game
-docker compose -f testnets/cardano_node_master/docker-compose.yaml \
+docker compose -f testnets/cardano-node-releases/docker-compose.yaml \
     exec asteria-game /bin/asteria-bootstrap
-docker compose -f testnets/cardano_node_master/docker-compose.yaml \
+docker compose -f testnets/cardano-node-releases/docker-compose.yaml \
     exec asteria-game /bin/asteria-game
 ```
 
@@ -207,8 +207,8 @@ docker compose -f testnets/cardano_node_master/docker-compose.yaml \
 [asteria]: https://github.com/txpipe/asteria
 [asteria-onchain]: https://github.com/txpipe/asteria/tree/main/onchain
 [issue-56]: https://github.com/cardano-foundation/cardano-node-antithesis/issues/56
-[master-why]: ../testnets/cardano-node-master.md#why-asteria-game-is-here
-[master-compose]: https://github.com/cardano-foundation/cardano-node-antithesis/blob/main/testnets/cardano_node_master/docker-compose.yaml
+[master-why]: ../testnets/cardano-node-releases.md#why-asteria-game-is-here
+[master-compose]: https://github.com/cardano-foundation/cardano-node-antithesis/blob/main/testnets/cardano-node-releases/docker-compose.yaml
 [master-pr-128]: https://github.com/cardano-foundation/cardano-node-antithesis/pull/128
 [HAL]: https://github.com/cardano-foundation/hal
 [CF]: https://github.com/cardano-foundation
