@@ -15,22 +15,25 @@
 package cardano
 
 import (
-	"sync"
+	"context"
 
 	"github.com/blinklabs-io/adder/event"
 	"github.com/blinklabs-io/adder/plugin"
 )
 
 type Cardano struct {
-	errorChan  chan error
-	inputChan  chan event.Event
-	outputChan chan event.Event
-	doneChan   chan struct{}
-	wg         sync.WaitGroup
-	stopOnce   sync.Once
-	logger     plugin.Logger
-	filterSet  filterSet
+	plugin.Base
+	filterSet      filterSet
+	onDrop         func()
+	pipelineOnDrop func()
 }
+
+// SetDropObserver records events rejected by this filter. Configure before Start.
+func (c *Cardano) SetDropObserver(observer func()) { c.onDrop = observer }
+
+// SetPipelineDropObserver records rejected events for the owning pipeline.
+// Configure before Start; replacing the callback keeps restarts idempotent.
+func (c *Cardano) SetPipelineDropObserver(observer func()) { c.pipelineOnDrop = observer }
 
 // New returns a new Cardano object with the specified options applied
 func New(options ...CardanoOptionFunc) *Cardano {
@@ -41,36 +44,53 @@ func New(options ...CardanoOptionFunc) *Cardano {
 	return c
 }
 
+// Role identifies this plugin as a pipeline filter.
+func (c *Cardano) Role() plugin.PluginType { return plugin.PluginTypeFilter }
+
 // Start the cardano filter
 func (c *Cardano) Start() error {
-	c.errorChan = make(chan error)
-	c.inputChan = make(chan event.Event, 10)
-	c.outputChan = make(chan event.Event, 10)
-	c.doneChan = make(chan struct{})
-	c.stopOnce = sync.Once{}
-	c.wg.Add(1)
-	go c.processEvents()
+	return c.StartContext(context.Background())
+}
+
+// StartContext starts the plugin with ctx governing setup and run operations.
+// Call Stop to wait for workers and release resources, including after cancellation.
+func (c *Cardano) StartContext(ctx context.Context) error {
+	return c.StartRun(ctx,
+		plugin.BaseConfig{HasInput: true, HasOutput: true},
+		c.start,
+		plugin.ShutdownHooks{},
+	)
+}
+
+func (c *Cardano) start(ctx context.Context) error {
+	c.Go(func() { c.processEvents(ctx) })
 	return nil
 }
 
 // processEvents handles incoming events and applies filters
-func (c *Cardano) processEvents() {
-	defer c.wg.Done()
+func (c *Cardano) processEvents(ctx context.Context) {
+	done, in := c.Done(), c.Input()
 	for {
 		select {
-		case <-c.doneChan:
+		case <-ctx.Done():
 			return
-		case evt, ok := <-c.inputChan:
-			// Channel has been closed, which means we're shutting down
+		case <-done:
+			return
+		case evt, ok := <-in:
+			// Channel closed: we're shutting down
 			if !ok {
 				return
 			}
 			if c.filterEvent(evt) {
-				// Send event along, but check for shutdown
-				select {
-				case <-c.doneChan:
+				if !c.Emit(evt) {
 					return
-				case c.outputChan <- evt:
+				}
+			} else {
+				if c.onDrop != nil {
+					c.onDrop()
+				}
+				if c.pipelineOnDrop != nil {
+					c.pipelineOnDrop()
 				}
 			}
 		}
@@ -162,7 +182,9 @@ func (c *Cardano) filterTransactionEvent(te event.TransactionEvent) bool {
 }
 
 // filterDRepCertificateEvent checks DRep filter for DRep certificate events
-func (c *Cardano) filterDRepCertificateEvent(de event.DRepCertificateEvent) bool {
+func (c *Cardano) filterDRepCertificateEvent(
+	de event.DRepCertificateEvent,
+) bool {
 	if !c.filterSet.hasDRepFilter {
 		return true
 	}
@@ -209,36 +231,7 @@ func (c *Cardano) filterGovernanceEvent(ge event.GovernanceEvent) bool {
 
 // Stop the cardano filter
 func (c *Cardano) Stop() error {
-	c.stopOnce.Do(func() {
-		if c.doneChan != nil {
-			close(c.doneChan)
-		}
-		// Wait for goroutine to exit before closing channels
-		c.wg.Wait()
-		if c.inputChan != nil {
-			close(c.inputChan)
-		}
-		if c.outputChan != nil {
-			close(c.outputChan)
-		}
-		if c.errorChan != nil {
-			close(c.errorChan)
-		}
-	})
-	return nil
+	return c.Shutdown(plugin.ShutdownHooks{})
 }
 
-// ErrorChan returns the plugin's error channel
-func (c *Cardano) ErrorChan() <-chan error {
-	return c.errorChan
-}
-
-// InputChan returns the input event channel
-func (c *Cardano) InputChan() chan<- event.Event {
-	return c.inputChan
-}
-
-// OutputChan returns the output event channel
-func (c *Cardano) OutputChan() <-chan event.Event {
-	return c.outputChan
-}
+var _ plugin.ManagedPlugin = (*Cardano)(nil)
