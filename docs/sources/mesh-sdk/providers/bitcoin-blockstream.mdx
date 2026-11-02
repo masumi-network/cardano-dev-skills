@@ -14,6 +14,8 @@ import Link from "fumadocs-core/link";
 - Low-to-medium volume production applications
 - Testnet development before deploying to mainnet
 
+For authenticated production access, use [`BlockstreamEnterpriseBitcoinProvider`](/providers/bitcoin-blockstream-enterprise). Both providers share the same Esplora REST methods via an internal HTTP client.
+
 ## Quick Start
 
 ```bash
@@ -173,7 +175,7 @@ const utxo = await provider.fetchUTxO("abc123...", 0);
 
 ### fetchAddressTxs
 
-Retrieve transaction history for a Bitcoin address, sorted newest-first. Supports cursor-based pagination.
+Retrieve transaction history for a Bitcoin address. The provider returns the Esplora page unchanged: `GET /address/{address}/txs`, or `GET /address/{address}/txs/chain/{lastSeenTxid}` when a cursor is set. Esplora returns up to 25 transactions per page, unconfirmed first, then confirmed newest-first.
 
 ```ts
 await provider.fetchAddressTxs(
@@ -190,7 +192,7 @@ await provider.fetchAddressTxs(
 **Example:**
 
 ```ts
-// First page (most recent 25 transactions)
+// First Esplora page
 const txs = await provider.fetchAddressTxs("bc1q...");
 
 // Next page
@@ -242,7 +244,7 @@ if (status.confirmed) {
 
 ### fetchFeeEstimates
 
-Retrieve the recommended fee rate (sat/vB) for a target confirmation within `blocks` blocks. Falls back to the next-closest target if an exact match is unavailable; defaults to `2 sat/vB` if the fee API is unreachable.
+Retrieve the recommended fee rate (sat/vB) for a target confirmation within `blocks` blocks, from `GET /fee-estimates`. A failed request throws. If that block target is missing, the provider uses the smallest target greater than or equal to `blocks`, or the largest target in the map when every target is smaller. It returns `2` only when that lookup still has no rate.
 
 ```ts
 await provider.fetchFeeEstimates(blocks: number): Promise<number>
@@ -255,7 +257,7 @@ await provider.fetchFeeEstimates(blocks: number): Promise<number>
 **Example:**
 
 ```ts
-const feeRate = await provider.fetchFeeEstimates(6); // next ~1 hour
+const feeRate = await provider.fetchFeeEstimates(6); // 6-block target
 console.log(`Recommended: ${feeRate} sat/vB`);
 ```
 
@@ -271,7 +273,7 @@ await provider.fetchScriptInfo(hash: string): Promise<BitcoinScriptInfo>
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `hash` | `string` | Yes | Script hash (hex, SHA256 of the script) |
+| `hash` | `string` | Yes | Esplora script hash. Passed through to `/scripthash/{hash}` with no hashing or byte reversal |
 
 ---
 
@@ -361,6 +363,6 @@ async function sendBitcoin() {
 
 ## Related
 
-- <Link href="/providers/bitcoin-maestro">Maestro Bitcoin Provider</Link> - Enterprise-grade alternative with an API key
+- <Link href="/providers/bitcoin-blockstream-enterprise">Blockstream Enterprise Bitcoin Provider</Link> - Authenticated Esplora API with OAuth client credentials
 - <Link href="/apis/wallets/bitcoin/headless-wallet">Bitcoin Headless Wallet</Link> - Use this provider with a self-custodial HD wallet
 - <Link href="/providers">All Providers</Link> - Compare with Cardano providers
