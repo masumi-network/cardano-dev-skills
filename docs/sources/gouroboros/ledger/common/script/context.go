@@ -17,18 +17,21 @@ package script
 import (
 	"bytes"
 	"cmp"
+	"errors"
 	"fmt"
 	"math/big"
 	"slices"
+	"sync"
 
-	"github.com/blinklabs-io/gouroboros/cbor"
 	lcommon "github.com/blinklabs-io/gouroboros/ledger/common"
 	"github.com/blinklabs-io/plutigo/data"
 )
 
-// eraIdConway is the first era with strict validity upper bounds. Keep this
-// numeric boundary here to avoid importing era packages into common/script.
-const eraIdConway = 6
+// Era transaction type values avoid importing the ledger era packages here.
+const (
+	eraIdAlonzo = 4
+	eraIdConway = 6
+)
 
 type ScriptContext interface {
 	isScriptContext()
@@ -84,6 +87,20 @@ func NewScriptContextV3(
 	redeemer Redeemer,
 	purpose ScriptPurpose,
 ) ScriptContext {
+	// Normalize the redeemer here rather than trusting every caller to do
+	// it. Decode preserves each container's definite/indefinite-length
+	// choice so a decoded value re-encodes to its original bytes, but
+	// cardano-ledger carries no such fidelity into script-visible data: it
+	// rebuilds those values, which is equivalent to the package default
+	// encoding. A redeemer handed to a script straight from the wire can
+	// therefore serialise to different bytes than the reference
+	// implementation produces for the same semantic value, and a script
+	// that hashes or compares SerialiseData output -- a one-shot mint
+	// checking an asset name against blake2b_256 of its seed TxOutRef, for
+	// example -- then diverges from the rest of the network. The redeemers
+	// map inside TxInfo is normalized where it is built; this covers the
+	// copy the V3 context carries alongside it.
+	redeemer.Data = data.Normalize(redeemer.Data)
 	return ScriptContextV3{
 		TxInfo:     txInfo,
 		Redeemer:   redeemer,
@@ -94,6 +111,41 @@ func NewScriptContextV3(
 type TxInfo interface {
 	isTxInfo()
 	ToPlutusData() data.PlutusData
+}
+
+// CachedTxInfo is a TxInfo whose PlutusData conversion is computed once and
+// shared by every script context built from it. A transaction's TxInfo is the
+// same for each of its redeemers; only the purpose differs, so building the
+// contexts from one CachedTxInfo converts the TxInfo once per transaction
+// rather than once per redeemer. The returned PlutusData must be treated as
+// read-only. It is safe for concurrent use.
+type CachedTxInfo struct {
+	inner TxInfo
+	once  sync.Once
+	data  data.PlutusData
+}
+
+func (*CachedTxInfo) isTxInfo() {}
+
+// NewCachedTxInfo wraps txInfo so that its ToPlutusData conversion runs at
+// most once. Wrapping an already cached TxInfo returns it unchanged.
+func NewCachedTxInfo(txInfo TxInfo) *CachedTxInfo {
+	if cached, ok := txInfo.(*CachedTxInfo); ok {
+		return cached
+	}
+	return &CachedTxInfo{inner: txInfo}
+}
+
+// Unwrap returns the TxInfo being cached.
+func (c *CachedTxInfo) Unwrap() TxInfo {
+	return c.inner
+}
+
+func (c *CachedTxInfo) ToPlutusData() data.PlutusData {
+	c.once.Do(func() {
+		c.data = c.inner.ToPlutusData()
+	})
+	return c.data
 }
 
 type TxInfoV1 struct {
@@ -208,6 +260,7 @@ func NewTxInfoV1FromTransaction(
 	tx lcommon.Transaction,
 	resolvedInputs []lcommon.Utxo,
 	strictValidityUpperBound bool,
+	protocolVersionMajor uint,
 ) (TxInfoV1, error) {
 	validityRange, err := validityRangeInfo(slotState, tx, strictValidityUpperBound)
 	if err != nil {
@@ -232,15 +285,26 @@ func NewTxInfoV1FromTransaction(
 			nil,
 			nil,
 			witnessDatums,
+			protocolVersionMajor,
 		),
 	)
 	if err != nil {
 		return TxInfoV1{}, err
 	}
 	tmpData := dataInfo(tx.Witnesses())
+	contextInputs, err := contextInputsForPlutus(
+		expandInputs(inputs, resolvedInputs), true,
+	)
+	if err != nil {
+		return TxInfoV1{}, err
+	}
+	contextOutputs, err := contextOutputsForPlutus(tx.Outputs(), true)
+	if err != nil {
+		return TxInfoV1{}, err
+	}
 	ret := TxInfoV1{
-		Inputs:       expandInputs(inputs, resolvedInputs),
-		Outputs:      collapseOutputs(tx.Produced()),
+		Inputs:       contextInputs,
+		Outputs:      contextOutputs,
 		Fee:          tx.Fee(),
 		Mint:         *assetMint,
 		ValidRange:   validityRange,
@@ -333,6 +397,7 @@ func NewTxInfoV2FromTransaction(
 	tx lcommon.Transaction,
 	resolvedInputs []lcommon.Utxo,
 	strictValidityUpperBound bool,
+	protocolVersionMajor uint,
 ) (TxInfoV2, error) {
 	validityRange, err := validityRangeInfo(slotState, tx, strictValidityUpperBound)
 	if err != nil {
@@ -357,28 +422,42 @@ func NewTxInfoV2FromTransaction(
 			nil, // votes
 			nil, // proposalProcedures
 			witnessDatums,
+			protocolVersionMajor,
 		),
 	)
 	if err != nil {
 		return TxInfoV2{}, err
 	}
 	tmpData := dataInfo(tx.Witnesses())
+	contextInputs, err := contextInputsForPlutus(
+		expandInputs(inputs, resolvedInputs), false,
+	)
+	if err != nil {
+		return TxInfoV2{}, err
+	}
+	contextReferenceInputs, err := contextInputsForPlutus(
+		expandInputs(SortInputs(tx.ReferenceInputs()), resolvedInputs), false,
+	)
+	if err != nil {
+		return TxInfoV2{}, err
+	}
+	contextOutputs, err := contextOutputsForPlutus(tx.Outputs(), false)
+	if err != nil {
+		return TxInfoV2{}, err
+	}
 	ret := TxInfoV2{
-		Inputs: expandInputs(inputs, resolvedInputs),
-		ReferenceInputs: expandInputs(
-			SortInputs(tx.ReferenceInputs()),
-			resolvedInputs,
-		),
-		Outputs:      collapseOutputs(tx.Produced()),
-		Fee:          tx.Fee(),
-		Mint:         *assetMint,
-		ValidRange:   validityRange,
-		Certificates: certs,
-		Withdrawals:  withdrawals,
-		Signatories:  signatoriesInfo(tx.RequiredSigners()),
-		Redeemers:    redeemers,
-		Data:         tmpData,
-		Id:           tx.Id(),
+		Inputs:          contextInputs,
+		ReferenceInputs: contextReferenceInputs,
+		Outputs:         contextOutputs,
+		Fee:             tx.Fee(),
+		Mint:            *assetMint,
+		ValidRange:      validityRange,
+		Certificates:    certs,
+		Withdrawals:     withdrawals,
+		Signatories:     signatoriesInfo(tx.RequiredSigners()),
+		Redeemers:       redeemers,
+		Data:            tmpData,
+		Id:              tx.Id(),
 	}
 	return ret, nil
 }
@@ -400,6 +479,7 @@ type TxInfoV3 struct {
 	ProposalProcedures    []lcommon.ProposalProcedure
 	CurrentTreasuryAmount Option[*big.Int]
 	TreasuryDonation      Option[*big.Int]
+	ProtocolVersionMajor  uint
 }
 
 func (TxInfoV3) isTxInfo() {}
@@ -412,7 +492,7 @@ func (t TxInfoV3) ToPlutusData() data.PlutusData {
 		toPlutusData(t.Outputs),
 		toPlutusData(t.Fee),
 		t.Mint.ToPlutusData(),
-		certificatesToPlutusData(t.Certificates),
+		certificatesToPlutusData(t.Certificates, t.ProtocolVersionMajor),
 		toPlutusData(t.Withdrawals),
 		t.ValidRange.ToPlutusData(),
 		toPlutusData(t.Signatories),
@@ -430,7 +510,9 @@ func NewTxInfoV3FromTransaction(
 	slotState lcommon.SlotState,
 	tx lcommon.Transaction,
 	resolvedInputs []lcommon.Utxo,
+	protocolVersionMajor uint,
 ) (TxInfoV3, error) {
+	major := protocolVersionMajor
 	// Plutus V3 only exists in the Conway era and later, where cardano-ledger
 	// always uses an EXCLUSIVE (strict) validity-interval upper bound.
 	validityRange, err := validityRangeInfo(slotState, tx, true)
@@ -457,30 +539,45 @@ func NewTxInfoV3FromTransaction(
 			votes,
 			proposalProcedures,
 			witnessDatums,
+			major,
 		),
 	)
 	if err != nil {
 		return TxInfoV3{}, err
 	}
 	tmpData := dataInfo(tx.Witnesses())
+	contextInputs, err := contextInputsForPlutus(
+		expandInputs(inputs, resolvedInputs), false,
+	)
+	if err != nil {
+		return TxInfoV3{}, err
+	}
+	contextReferenceInputs, err := contextInputsForPlutus(
+		expandInputs(SortInputs(tx.ReferenceInputs()), resolvedInputs), false,
+	)
+	if err != nil {
+		return TxInfoV3{}, err
+	}
+	contextOutputs, err := contextOutputsForPlutus(tx.Outputs(), false)
+	if err != nil {
+		return TxInfoV3{}, err
+	}
 	ret := TxInfoV3{
-		Inputs: expandInputs(inputs, resolvedInputs),
-		ReferenceInputs: expandInputs(
-			SortInputs(tx.ReferenceInputs()),
-			resolvedInputs,
-		),
-		Outputs:            collapseOutputs(tx.Produced()),
-		Fee:                tx.Fee(),
-		Mint:               *assetMint,
-		ValidRange:         validityRange,
-		Certificates:       tx.Certificates(),
-		Withdrawals:        withdrawals,
-		Signatories:        signatoriesInfo(tx.RequiredSigners()),
-		Redeemers:          redeemers,
-		Data:               tmpData,
-		Id:                 tx.Id(),
-		Votes:              votes,
-		ProposalProcedures: proposalProcedures,
+		Inputs:               contextInputs,
+		ReferenceInputs:      contextReferenceInputs,
+		Outputs:              contextOutputs,
+		Fee:                  tx.Fee(),
+		Mint:                 *assetMint,
+		ValidRange:           validityRange,
+		Certificates:         tx.Certificates(),
+		Withdrawals:          withdrawals,
+		Signatories:          signatoriesInfo(tx.RequiredSigners()),
+		Redeemers:            redeemers,
+		Data:                 tmpData,
+		Id:                   tx.Id(),
+		Votes:                votes,
+		ProposalProcedures:   proposalProcedures,
+		ProtocolVersionMajor: major,
 	}
 	if lcommon.TransactionCurrentTreasuryValuePresent(tx) {
 		amt := tx.CurrentTreasuryValue()
@@ -490,6 +587,37 @@ func NewTxInfoV3FromTransaction(
 		ret.TreasuryDonation.Value = amt
 	}
 	return ret, nil
+}
+
+// ValidatePlutusV3ReferenceInputs applies the PV11+ Plutus V3 restriction to
+// the language that actually executes, rather than to every script available
+// through a witness or reference input.
+func ValidatePlutusV3ReferenceInputs(
+	tx lcommon.Transaction,
+	protocolVersionMajor uint,
+) error {
+	if tx == nil || protocolVersionMajor < lcommon.ProtocolVersionVanRossem {
+		return nil
+	}
+	inputs := make(map[transactionInputKey]struct{}, len(tx.Inputs()))
+	for _, input := range tx.Inputs() {
+		inputs[transactionInputKey{txID: input.Id(), index: input.Index()}] = struct{}{}
+	}
+	for _, input := range tx.ReferenceInputs() {
+		key := transactionInputKey{txID: input.Id(), index: input.Index()}
+		if _, exists := inputs[key]; exists {
+			return fmt.Errorf(
+				"plutus V3 reference input %s is also a regular input",
+				input.String(),
+			)
+		}
+	}
+	return nil
+}
+
+type transactionInputKey struct {
+	txID  lcommon.Blake2b256
+	index uint32
 }
 
 type TimeRange struct {
@@ -622,7 +750,10 @@ func expandInputs(
 	ret := make([]ResolvedInput, len(inputs))
 	for i, input := range inputs {
 		for _, resolvedInput := range resolvedInputs {
-			if input.String() == resolvedInput.Id.String() {
+			// ResolvedInput.Equals compares by (TxId, Index) directly rather
+			// than formatting both sides through String(): this loop is
+			// O(inputs x resolvedInputs) per transaction.
+			if ResolvedInput(resolvedInput).Equals(input) {
 				ret[i] = ResolvedInput(resolvedInput)
 				break
 			}
@@ -631,12 +762,42 @@ func expandInputs(
 	return ret
 }
 
-func collapseOutputs(outputs []lcommon.Utxo) []lcommon.TransactionOutput {
-	ret := make([]lcommon.TransactionOutput, len(outputs))
-	for i, item := range outputs {
-		ret[i] = item.Output
+var errByronTxOutInPlutusContext = errors.New(
+	"cannot represent a Byron TxOut in Plutus context",
+)
+
+func contextInputsForPlutus(
+	inputs []ResolvedInput,
+	filterByron bool,
+) ([]ResolvedInput, error) {
+	ret := make([]ResolvedInput, 0, len(inputs))
+	for _, input := range inputs {
+		if input.Output != nil && input.Output.Address().Type() == lcommon.AddressTypeByron {
+			if filterByron {
+				continue
+			}
+			return nil, errByronTxOutInPlutusContext
+		}
+		ret = append(ret, input)
 	}
-	return ret
+	return ret, nil
+}
+
+func contextOutputsForPlutus(
+	outputs []lcommon.TransactionOutput,
+	filterByron bool,
+) ([]lcommon.TransactionOutput, error) {
+	ret := make([]lcommon.TransactionOutput, 0, len(outputs))
+	for _, output := range outputs {
+		if output != nil && output.Address().Type() == lcommon.AddressTypeByron {
+			if filterByron {
+				continue
+			}
+			return nil, errByronTxOutInPlutusContext
+		}
+		ret = append(ret, output)
+	}
+	return ret, nil
 }
 
 func sortedRedeemerKeys(
@@ -665,11 +826,13 @@ func validityRangeInfo(
 ) (TimeRange, error) {
 	var ret TimeRange
 	ret.strictUpperBound = strictValidityUpperBound
-	startSlot := tx.ValidityIntervalStart()
+	startSlot, lowerBoundPresent := lcommon.TransactionValidityIntervalLowerBound(
+		tx,
+	)
 	endSlot, upperBoundPresent := lcommon.TransactionValidityIntervalUpperBound(
 		tx,
 	)
-	ret.lowerBoundPresent = validityLowerBoundPresent(tx)
+	ret.lowerBoundPresent = lowerBoundPresent
 	ret.upperBoundPresent = upperBoundPresent
 	if ret.lowerBoundPresent {
 		startTime, err := slotState.SlotToTime(startSlot)
@@ -686,25 +849,6 @@ func validityRangeInfo(
 		ret.upperBound = uint64(endTime.UnixMilli()) // nolint:gosec
 	}
 	return ret, nil
-}
-
-func validityLowerBoundPresent(tx lcommon.Transaction) bool {
-	startPresent := tx.ValidityIntervalStart() > 0
-	txCbor := tx.Cbor()
-	if len(txCbor) == 0 {
-		return startPresent
-	}
-	var txFields []cbor.RawMessage
-	if _, err := cbor.Decode(txCbor, &txFields); err != nil ||
-		len(txFields) == 0 {
-		return startPresent
-	}
-	var bodyFields map[uint]cbor.RawMessage
-	if _, err := cbor.Decode(txFields[0], &bodyFields); err != nil {
-		return startPresent
-	}
-	_, startPresent = bodyFields[8]
-	return startPresent
 }
 
 func withdrawalsInfo(
@@ -846,6 +990,15 @@ func signatoriesInfo(
 	)
 }
 
+// VotingProceduresToPlutusData encodes voting procedures as the script
+// context's votes map, with voters and governance action ids in the
+// reference ledger's order.
+func VotingProceduresToPlutusData(
+	votingProcedures lcommon.VotingProcedures,
+) data.PlutusData {
+	return votingInfo(votingProcedures).ToPlutusData()
+}
+
 func votingInfo(
 	votingProcedures lcommon.VotingProcedures,
 ) KeyValuePairs[*lcommon.Voter, KeyValuePairs[*lcommon.GovActionId, lcommon.VotingProcedure]] {
@@ -933,16 +1086,18 @@ func votingInfo(
 
 func certificatesToPlutusData(
 	certificates []lcommon.Certificate,
+	protocolVersionMajor uint,
 ) data.PlutusData {
 	tmpCerts := make([]data.PlutusData, len(certificates))
 	for idx, cert := range certificates {
-		tmpCerts[idx] = certificateToPlutusData(cert)
+		tmpCerts[idx] = certificateToPlutusData(cert, protocolVersionMajor)
 	}
 	return data.NewList(tmpCerts...)
 }
 
 func certificateToPlutusData(
 	certificate lcommon.Certificate,
+	protocolVersionMajor uint,
 ) data.PlutusData {
 	switch c := certificate.(type) {
 	case *lcommon.StakeRegistrationCertificate:
@@ -952,10 +1107,14 @@ func certificateToPlutusData(
 			data.NewConstr(1),
 		)
 	case *lcommon.RegistrationCertificate:
+		deposit := Option[*big.Int]{Value: new(big.Int).SetUint64(c.Amount)}.ToPlutusData()
+		if protocolVersionMajor == lcommon.ProtocolVersionConway {
+			deposit = Option[*big.Int]{}.ToPlutusData()
+		}
 		return data.NewConstr(
 			0,
 			c.StakeCredential.ToPlutusData(),
-			Option[*big.Int]{Value: big.NewInt(c.Amount)}.ToPlutusData(),
+			deposit,
 		)
 	case *lcommon.StakeDeregistrationCertificate:
 		return data.NewConstr(
@@ -964,10 +1123,14 @@ func certificateToPlutusData(
 			data.NewConstr(1),
 		)
 	case *lcommon.DeregistrationCertificate:
+		refund := Option[*big.Int]{Value: new(big.Int).SetUint64(c.Amount)}.ToPlutusData()
+		if protocolVersionMajor == lcommon.ProtocolVersionConway {
+			refund = Option[*big.Int]{}.ToPlutusData()
+		}
 		return data.NewConstr(
 			1,
 			c.StakeCredential.ToPlutusData(),
-			Option[*big.Int]{Value: big.NewInt(c.Amount)}.ToPlutusData(),
+			refund,
 		)
 	case *lcommon.StakeDelegationCertificate:
 		return data.NewConstr(
@@ -1005,7 +1168,7 @@ func certificateToPlutusData(
 				0,
 				toPlutusData(c.PoolKeyHash),
 			),
-			data.NewInteger(big.NewInt(c.Amount)),
+			data.NewInteger(new(big.Int).SetUint64(c.Amount)),
 		)
 	case *lcommon.VoteRegistrationDelegationCertificate:
 		return data.NewConstr(
@@ -1015,7 +1178,7 @@ func certificateToPlutusData(
 				1,
 				c.Drep.ToPlutusData(),
 			),
-			data.NewInteger(big.NewInt(c.Amount)),
+			data.NewInteger(new(big.Int).SetUint64(c.Amount)),
 		)
 	case *lcommon.StakeVoteRegistrationDelegationCertificate:
 		return data.NewConstr(
@@ -1026,13 +1189,13 @@ func certificateToPlutusData(
 				c.PoolKeyHash.ToPlutusData(),
 				c.Drep.ToPlutusData(),
 			),
-			data.NewInteger(big.NewInt(c.Amount)),
+			data.NewInteger(new(big.Int).SetUint64(c.Amount)),
 		)
 	case *lcommon.RegistrationDrepCertificate:
 		return data.NewConstr(
 			4,
 			c.DrepCredential.ToPlutusData(),
-			data.NewInteger(big.NewInt(c.Amount)),
+			data.NewInteger(new(big.Int).SetUint64(c.Amount)),
 		)
 	case *lcommon.UpdateDrepCertificate:
 		return data.NewConstr(
@@ -1043,7 +1206,7 @@ func certificateToPlutusData(
 		return data.NewConstr(
 			6,
 			c.DrepCredential.ToPlutusData(),
-			data.NewInteger(big.NewInt(c.Amount)),
+			data.NewInteger(new(big.Int).SetUint64(c.Amount)),
 		)
 	case *lcommon.PoolRegistrationCertificate:
 		return data.NewConstr(
