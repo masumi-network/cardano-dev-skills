@@ -18,11 +18,16 @@ import (
 	"bytes"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"math"
+	"math/big"
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 
 	"github.com/blinklabs-io/gouroboros/ledger/alonzo"
 	"github.com/blinklabs-io/gouroboros/ledger/byron"
@@ -60,6 +65,19 @@ type CardanoNodeConfig struct {
 	ShelleyGenesisHash                         string `yaml:"ShelleyGenesisHash"`
 	CheckpointsFile                            string `yaml:"CheckpointsFile"`
 	CheckpointsFileHash                        string `yaml:"CheckpointsFileHash"`
+	// PBftSignatureThreshold is the optional Byron PBFT signature threshold,
+	// the maximum share of the last k blocks one genesis key may sign.
+	PBftSignatureThreshold *CardanoNodeDouble `yaml:"PBftSignatureThreshold"`
+
+	// ConsensusMode is the cardano-node chain selection mode, "PraosMode" or
+	// "GenesisMode". It is read only to tell a network that follows its peers
+	// by Praos rules from one that selects by Ouroboros Genesis density; see
+	// PraosConsensusMode.
+	ConsensusMode string `yaml:"ConsensusMode"`
+
+	// TxSubmissionLogicVersion selects the cardano-node inbound transaction
+	// submission strategy.
+	TxSubmissionLogicVersion TxSubmissionLogicVersion `yaml:"TxSubmissionLogicVersion"`
 
 	// Hard fork epoch configuration. Pointer types distinguish
 	// "not set" (nil) from "set to 0" (*0), which is critical
@@ -91,18 +109,280 @@ type CardanoNodeConfig struct {
 	PeerSharing *bool `yaml:"PeerSharing"`
 }
 
+// TxSubmissionLogicVersion identifies a cardano-node inbound transaction
+// submission strategy.
+type TxSubmissionLogicVersion string
+
+const (
+	// TxSubmissionLogicV1 is the legacy per-peer inbound strategy implemented
+	// by Dingo.
+	TxSubmissionLogicV1 TxSubmissionLogicVersion = "TxSubmissionLogicV1"
+	// TxSubmissionLogicV2 is the coordinated multi-peer inbound strategy.
+	TxSubmissionLogicV2 TxSubmissionLogicVersion = "TxSubmissionLogicV2"
+)
+
+func (v TxSubmissionLogicVersion) validate() error {
+	switch v {
+	case TxSubmissionLogicV1:
+		return nil
+	case TxSubmissionLogicV2:
+		return fmt.Errorf(
+			"TxSubmissionLogicVersion %q is not supported by Dingo; only %q is implemented",
+			v,
+			TxSubmissionLogicV1,
+		)
+	default:
+		return fmt.Errorf(
+			"invalid TxSubmissionLogicVersion %q: expected %q or %q",
+			v,
+			TxSubmissionLogicV1,
+			TxSubmissionLogicV2,
+		)
+	}
+}
+
+// CardanoNodeDouble is a numeric node-config value that cardano-node reads as
+// a Double.
+type CardanoNodeDouble float64
+
+// UnmarshalYAML accepts finite numeric scalars only.
+func (d *CardanoNodeDouble) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.ScalarNode ||
+		(node.Tag != "!!float" && node.Tag != "!!int") {
+		return fmt.Errorf("expected a numeric scalar, got %s", node.Tag)
+	}
+	var value float64
+	if err := node.Decode(&value); err != nil {
+		return err
+	}
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return fmt.Errorf("expected a finite number, got %s", node.Value)
+	}
+	*d = CardanoNodeDouble(value)
+	return nil
+}
+
 const (
 	defaultMithrilGenesisVerificationKeyFile          = "genesis.vkey"
 	defaultMithrilGenesisAncillaryVerificationKeyFile = "ancillary.vkey"
 )
 
+// envelopeConfigVersion is the cardano-config envelope format version this
+// loader understands. cardano-node 11.2.0 ships configs as an envelope of
+// "$schema", "Version", "MinNodeVersion" and "Configuration", with settings
+// grouped into sections under "Configuration". The cardano-config v2 schema
+// describes Version as "currently 2"; a parser of version N reads every
+// version up to N, so a later version may carry keys or a layout this loader
+// does not know and is refused rather than read partially.
+const envelopeConfigVersion = 2
+
+// envelopeV2Sections lists the "Configuration" sections of a version 2
+// envelope whose keys keep their flat-format names, in the order they are
+// applied. Protocol carries the Byron to Conway genesis files and hashes and
+// the checkpoints file, Testing the Dijkstra genesis and the hard fork
+// overrides, Consensus the consensus mode, and Network peer sharing.
+var envelopeV2Sections = []string{"Protocol", "Testing", "Consensus", "Network"}
+
+// envelopeV2Network holds the version 2 Network keys whose names differ from
+// the flat format. The flat TargetNumberOf*Peers keys are the deadline (caught
+// up) peer targets, which version 2 names DeadlineTargetNumberOf*Peers.
+type envelopeV2Network struct {
+	DeadlineTargetNumberOfRootPeers        *int `yaml:"DeadlineTargetNumberOfRootPeers"`
+	DeadlineTargetNumberOfKnownPeers       *int `yaml:"DeadlineTargetNumberOfKnownPeers"`
+	DeadlineTargetNumberOfEstablishedPeers *int `yaml:"DeadlineTargetNumberOfEstablishedPeers"`
+	DeadlineTargetNumberOfActivePeers      *int `yaml:"DeadlineTargetNumberOfActivePeers"`
+}
+
 func NewCardanoNodeConfigFromReader(r io.Reader) (*CardanoNodeConfig, error) {
-	var ret CardanoNodeConfig
+	var doc yaml.Node
 	dec := yaml.NewDecoder(r)
-	if err := dec.Decode(&ret); err != nil {
+	if err := dec.Decode(&doc); err != nil {
+		return nil, err
+	}
+	ret := CardanoNodeConfig{
+		TxSubmissionLogicVersion: TxSubmissionLogicV1,
+	}
+	if len(doc.Content) == 0 {
+		return &ret, nil
+	}
+	root := doc.Content[0]
+	if root.Kind == yaml.MappingNode && isEnvelopeConfig(root) {
+		if err := ret.decodeEnvelope(root); err != nil {
+			return nil, err
+		}
+	} else if err := root.Decode(&ret); err != nil {
+		return nil, err
+	}
+	if err := ret.TxSubmissionLogicVersion.validate(); err != nil {
 		return nil, err
 	}
 	return &ret, nil
+}
+
+// mappingValue returns the value of key in a YAML mapping node, or nil.
+func mappingValue(m *yaml.Node, key string) *yaml.Node {
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if m.Content[i].Value == key {
+			return m.Content[i+1]
+		}
+	}
+	return nil
+}
+
+// isEnvelopeConfig reports whether a config uses the cardano-config envelope.
+// "Version" and "Configuration" are required envelope keys and are not keys of
+// the flat format.
+func isEnvelopeConfig(root *yaml.Node) bool {
+	return mappingValue(root, "Version") != nil ||
+		mappingValue(root, "Configuration") != nil
+}
+
+// rejectDuplicateKeys returns an error naming the first key that occurs more
+// than once in mapping m. Decoding into a yaml.Node skips the decoder's
+// duplicate-key check, and mappingValue would otherwise silently select the
+// first occurrence.
+func rejectDuplicateKeys(m *yaml.Node, path string) error {
+	seen := make(map[string]int, len(m.Content)/2)
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		k := m.Content[i]
+		if line, ok := seen[k.Value]; ok {
+			return fmt.Errorf(
+				"cardano node config: duplicate key %s at line %d (first at line %d)",
+				path+k.Value, k.Line, line,
+			)
+		}
+		seen[k.Value] = k.Line
+	}
+	return nil
+}
+
+// envelopeV2FieldKey maps a key of a version 2 section to the flat-format key
+// it sets, so that two keys setting the same field are detected.
+func envelopeV2FieldKey(section, key string) string {
+	if section == "Network" && strings.HasPrefix(key, "DeadlineTargetNumberOf") {
+		return strings.TrimPrefix(key, "Deadline")
+	}
+	return key
+}
+
+func (c *CardanoNodeConfig) decodeEnvelope(root *yaml.Node) error {
+	if err := rejectDuplicateKeys(root, ""); err != nil {
+		return err
+	}
+	versionNode := mappingValue(root, "Version")
+	if versionNode == nil {
+		return errors.New(
+			"cardano node config: envelope config has no Version",
+		)
+	}
+	var version int
+	if versionNode.Kind != yaml.ScalarNode || versionNode.Tag != "!!int" ||
+		versionNode.Decode(&version) != nil {
+		return fmt.Errorf(
+			"cardano node config: Version must be an integer, got %q",
+			versionNode.Value,
+		)
+	}
+	if version != envelopeConfigVersion {
+		return fmt.Errorf(
+			"cardano node config: unsupported config Version %d (supported: %d)",
+			version,
+			envelopeConfigVersion,
+		)
+	}
+	cfg := mappingValue(root, "Configuration")
+	if cfg == nil {
+		return errors.New(
+			"cardano node config: envelope config has no Configuration",
+		)
+	}
+	if cfg.Kind != yaml.MappingNode {
+		return errors.New(
+			"cardano node config: Configuration must be an object",
+		)
+	}
+	if err := rejectDuplicateKeys(cfg, "Configuration."); err != nil {
+		return err
+	}
+	// The supported sections are decoded onto one struct, so a field set from
+	// two sections would silently take the later value.
+	setBy := make(map[string]string)
+	for _, name := range envelopeV2Sections {
+		section := mappingValue(cfg, name)
+		if section == nil {
+			continue
+		}
+		if section.Kind != yaml.MappingNode {
+			return fmt.Errorf(
+				"cardano node config: Configuration.%s must be an object",
+				name,
+			)
+		}
+		for i := 0; i+1 < len(section.Content); i += 2 {
+			k := section.Content[i]
+			where := "Configuration." + name + "." + k.Value
+			field := envelopeV2FieldKey(name, k.Value)
+			if prev, ok := setBy[field]; ok {
+				return fmt.Errorf(
+					"cardano node config: duplicate key %s at line %d sets the same setting as %s",
+					where, k.Line, prev,
+				)
+			}
+			setBy[field] = where
+		}
+		if err := section.Decode(c); err != nil {
+			return fmt.Errorf(
+				"cardano node config: Configuration.%s: %w", name, err,
+			)
+		}
+	}
+	if network := mappingValue(cfg, "Network"); network != nil {
+		var n envelopeV2Network
+		if err := network.Decode(&n); err != nil {
+			return fmt.Errorf(
+				"cardano node config: Configuration.Network: %w", err,
+			)
+		}
+		setIfPresent(&c.TargetNumberOfRootPeers, n.DeadlineTargetNumberOfRootPeers)
+		setIfPresent(&c.TargetNumberOfKnownPeers, n.DeadlineTargetNumberOfKnownPeers)
+		setIfPresent(
+			&c.TargetNumberOfEstablishedPeers,
+			n.DeadlineTargetNumberOfEstablishedPeers,
+		)
+		setIfPresent(&c.TargetNumberOfActivePeers, n.DeadlineTargetNumberOfActivePeers)
+	}
+	return nil
+}
+
+func setIfPresent(dst *int, src *int) {
+	if src != nil {
+		*dst = *src
+	}
+}
+
+// PBFTSignatureLimit returns the most blocks one genesis key may sign in a
+// window of the last securityParam Byron blocks. ouroboros-consensus computes
+// floor(threshold * k) in Double arithmetic and stores it as a Word64, so a
+// product just below an integer rounds down and a negative product wraps.
+// configured is false when PBftSignatureThreshold is absent, in which case
+// cardano-node's default of 0.22 applies.
+func (c *CardanoNodeConfig) PBFTSignatureLimit(
+	securityParam uint64,
+) (limit uint64, configured bool, err error) {
+	if c == nil || c.PBftSignatureThreshold == nil {
+		return 0, false, nil
+	}
+	product := float64(*c.PBftSignatureThreshold) * float64(securityParam)
+	if math.IsNaN(product) || math.IsInf(product, 0) {
+		return 0, true, fmt.Errorf(
+			"PBftSignatureThreshold %v times k %d is not finite",
+			float64(*c.PBftSignatureThreshold),
+			securityParam,
+		)
+	}
+	floor, _ := big.NewFloat(math.Floor(product)).Int(nil)
+	modulus := new(big.Int).Lsh(big.NewInt(1), 64)
+	return floor.Mod(floor, modulus).Uint64(), true, nil
 }
 
 func NewCardanoNodeConfigFromFile(file string) (*CardanoNodeConfig, error) {
@@ -148,153 +428,14 @@ func NewCardanoNodeConfigFromEmbedFS(
 }
 
 func (c *CardanoNodeConfig) loadGenesisConfigs() error {
-	// Load Byron genesis
-	if c.ByronGenesisFile != "" {
-		byronGenesisPath := c.ByronGenesisFile
-		if !filepath.IsAbs(byronGenesisPath) {
-			byronGenesisPath = filepath.Join(c.path, byronGenesisPath)
+	err := c.loadGenesisDocuments(func(name string) ([]byte, error) {
+		if !filepath.IsAbs(name) {
+			name = filepath.Join(c.path, name)
 		}
-		byronGenesisBytes, err := os.ReadFile(byronGenesisPath)
-		if err != nil {
-			return err
-		}
-		byronGenesisHashBytes, err := canonicalizeByronGenesisJSON(
-			byronGenesisBytes,
-		)
-		if err != nil {
-			return err
-		}
-		byronHash, err := validateGenesisHash(
-			"Byron",
-			c.ByronGenesisHash,
-			byronGenesisHashBytes,
-		)
-		if err != nil {
-			return err
-		}
-		// Store computed hash if config does not contain hash.
-		c.ByronGenesisHash = byronHash
-		byronGenesis, err := byron.NewByronGenesisFromFile(byronGenesisPath)
-		if err != nil {
-			return err
-		}
-		c.byronGenesis = &byronGenesis
-	}
-	// Load Shelley genesis
-	if c.ShelleyGenesisFile != "" {
-		shelleyGenesisPath := c.ShelleyGenesisFile
-		if !filepath.IsAbs(shelleyGenesisPath) {
-			shelleyGenesisPath = filepath.Join(c.path, shelleyGenesisPath)
-		}
-		shelleyGenesisBytes, err := os.ReadFile(shelleyGenesisPath)
-		if err != nil {
-			return err
-		}
-		shelleyGenesisHashBytes := replaceGenesisLineEndings(
-			shelleyGenesisBytes,
-		)
-		shelleyHash, err := validateGenesisHash(
-			"Shelley",
-			c.ShelleyGenesisHash,
-			shelleyGenesisHashBytes,
-		)
-		if err != nil {
-			return err
-		}
-		c.ShelleyGenesisHash = shelleyHash
-		shelleyGenesis, err := shelley.NewShelleyGenesisFromFile(
-			shelleyGenesisPath,
-		)
-		if err != nil {
-			return err
-		}
-		c.shelleyGenesis = &shelleyGenesis
-	}
-	// Load Alonzo genesis
-	if c.AlonzoGenesisFile != "" {
-		alonzoGenesisPath := c.AlonzoGenesisFile
-		if !filepath.IsAbs(alonzoGenesisPath) {
-			alonzoGenesisPath = filepath.Join(c.path, alonzoGenesisPath)
-		}
-		alonzoGenesisBytes, err := os.ReadFile(alonzoGenesisPath)
-		if err != nil {
-			return err
-		}
-		alonzoGenesisHashBytes := replaceGenesisLineEndings(
-			alonzoGenesisBytes,
-		)
-		alonzoHash, err := validateGenesisHash(
-			"Alonzo",
-			c.AlonzoGenesisHash,
-			alonzoGenesisHashBytes,
-		)
-		if err != nil {
-			return err
-		}
-		c.AlonzoGenesisHash = alonzoHash
-		alonzoGenesis, err := alonzo.NewAlonzoGenesisFromFile(alonzoGenesisPath)
-		if err != nil {
-			return err
-		}
-		c.alonzoGenesis = &alonzoGenesis
-	}
-	// Load Conway genesis
-	if c.ConwayGenesisFile != "" {
-		conwayGenesisPath := c.ConwayGenesisFile
-		if !filepath.IsAbs(conwayGenesisPath) {
-			conwayGenesisPath = filepath.Join(c.path, conwayGenesisPath)
-		}
-		conwayGenesisBytes, err := os.ReadFile(conwayGenesisPath)
-		if err != nil {
-			return err
-		}
-		conwayGenesisHashBytes := replaceGenesisLineEndings(
-			conwayGenesisBytes,
-		)
-		conwayHash, err := validateGenesisHash(
-			"Conway",
-			c.ConwayGenesisHash,
-			conwayGenesisHashBytes,
-		)
-		if err != nil {
-			return err
-		}
-		c.ConwayGenesisHash = conwayHash
-		conwayGenesis, err := conway.NewConwayGenesisFromFile(conwayGenesisPath)
-		if err != nil {
-			return err
-		}
-		c.conwayGenesis = &conwayGenesis
-	}
-	// Load Dijkstra genesis
-	if c.DijkstraGenesisFile != "" {
-		dijkstraGenesisPath := c.DijkstraGenesisFile
-		if !filepath.IsAbs(dijkstraGenesisPath) {
-			dijkstraGenesisPath = filepath.Join(c.path, dijkstraGenesisPath)
-		}
-		dijkstraGenesisBytes, err := os.ReadFile(dijkstraGenesisPath)
-		if err != nil {
-			return err
-		}
-		dijkstraGenesisHashBytes := replaceGenesisLineEndings(
-			dijkstraGenesisBytes,
-		)
-		dijkstraHash, err := validateGenesisHash(
-			"Dijkstra",
-			c.DijkstraGenesisHash,
-			dijkstraGenesisHashBytes,
-		)
-		if err != nil {
-			return err
-		}
-		c.DijkstraGenesisHash = dijkstraHash
-		dijkstraGenesis, err := dijkstra.NewDijkstraGenesisFromFile(
-			dijkstraGenesisPath,
-		)
-		if err != nil {
-			return err
-		}
-		c.dijkstraGenesis = &dijkstraGenesis
+		return os.ReadFile(name)
+	})
+	if err != nil {
+		return err
 	}
 	if err := c.loadMithrilVerificationKeysFromDisk(); err != nil {
 		return err
@@ -306,6 +447,123 @@ func (c *CardanoNodeConfig) loadGenesisConfigs() error {
 		return err
 	}
 	return nil
+}
+
+// loadGenesisDocuments reads each configured genesis document once, then
+// hashes and parses those same bytes. Reading again to parse would let a file
+// replaced after the read make the parsed configuration differ from the bytes
+// whose hash was accepted.
+func (c *CardanoNodeConfig) loadGenesisDocuments(
+	read func(name string) ([]byte, error),
+) error {
+	if c.ByronGenesisFile != "" {
+		data, err := readHashedGenesis(
+			read, "Byron", c.ByronGenesisFile, &c.ByronGenesisHash,
+			canonicalizeByronGenesisJSON,
+		)
+		if err != nil {
+			return err
+		}
+		genesis, err := loadByronGenesisFromBytes(data)
+		if err != nil {
+			return err
+		}
+		c.byronGenesis = &genesis
+	}
+	if c.ShelleyGenesisFile != "" {
+		data, err := readHashedGenesis(
+			read, "Shelley", c.ShelleyGenesisFile, &c.ShelleyGenesisHash,
+			normalizeGenesisLineEndings,
+		)
+		if err != nil {
+			return err
+		}
+		genesis, err := shelley.NewShelleyGenesisFromReader(
+			bytes.NewReader(data),
+		)
+		if err != nil {
+			return err
+		}
+		c.shelleyGenesis = &genesis
+	}
+	if c.AlonzoGenesisFile != "" {
+		data, err := readHashedGenesis(
+			read, "Alonzo", c.AlonzoGenesisFile, &c.AlonzoGenesisHash,
+			normalizeGenesisLineEndings,
+		)
+		if err != nil {
+			return err
+		}
+		genesis, err := alonzo.NewAlonzoGenesisFromReader(
+			bytes.NewReader(data),
+		)
+		if err != nil {
+			return err
+		}
+		c.alonzoGenesis = &genesis
+	}
+	if c.ConwayGenesisFile != "" {
+		data, err := readHashedGenesis(
+			read, "Conway", c.ConwayGenesisFile, &c.ConwayGenesisHash,
+			normalizeGenesisLineEndings,
+		)
+		if err != nil {
+			return err
+		}
+		genesis, err := loadConwayGenesisFromBytes(data)
+		if err != nil {
+			return err
+		}
+		c.conwayGenesis = &genesis
+	}
+	if c.DijkstraGenesisFile != "" {
+		data, err := readHashedGenesis(
+			read, "Dijkstra", c.DijkstraGenesisFile, &c.DijkstraGenesisHash,
+			normalizeGenesisLineEndings,
+		)
+		if err != nil {
+			return err
+		}
+		genesis, err := dijkstra.NewDijkstraGenesisFromReader(
+			bytes.NewReader(data),
+		)
+		if err != nil {
+			return err
+		}
+		c.dijkstraGenesis = &genesis
+	}
+	return nil
+}
+
+// readHashedGenesis reads a genesis document, validates its hash against
+// *hash (storing the computed hash there when none is configured), and
+// returns the bytes that were hashed. hashInput derives the bytes the hash
+// covers from the document.
+func readHashedGenesis(
+	read func(name string) ([]byte, error),
+	era string,
+	file string,
+	hash *string,
+	hashInput func([]byte) ([]byte, error),
+) ([]byte, error) {
+	data, err := read(file)
+	if err != nil {
+		return nil, err
+	}
+	input, err := hashInput(data)
+	if err != nil {
+		return nil, err
+	}
+	computed, err := validateGenesisHash(era, *hash, input)
+	if err != nil {
+		return nil, err
+	}
+	*hash = computed
+	return input, nil
+}
+
+func normalizeGenesisLineEndings(data []byte) ([]byte, error) {
+	return replaceGenesisLineEndings(data), nil
 }
 
 func (c *CardanoNodeConfig) loadOptionalConfigFile(
@@ -379,25 +637,6 @@ func (c *CardanoNodeConfig) loadMithrilVerificationKeysFromDisk() error {
 	return nil
 }
 
-// loadGenesisFromEmbedFS loads a single genesis file from the embedded filesystem.
-// It handles path resolution and file opening/closing automatically.
-func (c *CardanoNodeConfig) loadGenesisFromEmbedFS(
-	filename string,
-) (io.ReadCloser, error) {
-	if filename == "" {
-		return nil, nil
-	}
-
-	genesisPath := filename
-	genesisPath = path.Join(c.path, genesisPath)
-
-	f, err := c.embedFS.Open(genesisPath)
-	if err != nil {
-		return nil, err
-	}
-	return f, nil
-}
-
 func (c *CardanoNodeConfig) loadOptionalConfigFileFromEmbedFS(
 	filename string,
 ) ([]byte, error) {
@@ -438,156 +677,11 @@ func (c *CardanoNodeConfig) resolveOptionalConfigFileFromEmbedFS(
 // loadGenesisConfigsFromEmbed loads all genesis configuration files from the embedded filesystem.
 // This method mirrors loadGenesisConfigs but reads from embed.FS instead of the regular filesystem.
 func (c *CardanoNodeConfig) loadGenesisConfigsFromEmbed() error {
-	// Load Byron genesis
-	if f, err := c.loadGenesisFromEmbedFS(c.ByronGenesisFile); err != nil {
+	err := c.loadGenesisDocuments(func(name string) ([]byte, error) {
+		return fs.ReadFile(c.embedFS, path.Join(c.path, name))
+	})
+	if err != nil {
 		return err
-	} else if f != nil {
-		defer f.Close()
-		byronGenesisBytes, err := io.ReadAll(f)
-		if err != nil {
-			return err
-		}
-		byronGenesisHashBytes, err := canonicalizeByronGenesisJSON(
-			byronGenesisBytes,
-		)
-		if err != nil {
-			return err
-		}
-		byronHash, err := validateGenesisHash(
-			"Byron",
-			c.ByronGenesisHash,
-			byronGenesisHashBytes,
-		)
-		if err != nil {
-			return err
-		}
-		c.ByronGenesisHash = byronHash
-		byronGenesis, err := byron.NewByronGenesisFromReader(
-			bytes.NewReader(byronGenesisBytes),
-		)
-		if err != nil {
-			return err
-		}
-		c.byronGenesis = &byronGenesis
-	}
-
-	// Load Shelley genesis
-	if f, err := c.loadGenesisFromEmbedFS(c.ShelleyGenesisFile); err != nil {
-		return err
-	} else if f != nil {
-		defer f.Close()
-		shelleyGenesisBytes, err := io.ReadAll(f)
-		if err != nil {
-			return err
-		}
-		shelleyGenesisHashBytes := replaceGenesisLineEndings(
-			shelleyGenesisBytes,
-		)
-		shelleyHash, err := validateGenesisHash(
-			"Shelley",
-			c.ShelleyGenesisHash,
-			shelleyGenesisHashBytes,
-		)
-		if err != nil {
-			return err
-		}
-		c.ShelleyGenesisHash = shelleyHash
-		shelleyGenesis, err := shelley.NewShelleyGenesisFromReader(
-			bytes.NewReader(shelleyGenesisBytes),
-		)
-		if err != nil {
-			return err
-		}
-		c.shelleyGenesis = &shelleyGenesis
-	}
-
-	// Load Alonzo genesis
-	if f, err := c.loadGenesisFromEmbedFS(c.AlonzoGenesisFile); err != nil {
-		return err
-	} else if f != nil {
-		defer f.Close()
-		alonzoGenesisBytes, err := io.ReadAll(f)
-		if err != nil {
-			return err
-		}
-		alonzoGenesisHashBytes := replaceGenesisLineEndings(
-			alonzoGenesisBytes,
-		)
-		alonzoHash, err := validateGenesisHash(
-			"Alonzo",
-			c.AlonzoGenesisHash,
-			alonzoGenesisHashBytes,
-		)
-		if err != nil {
-			return err
-		}
-		c.AlonzoGenesisHash = alonzoHash
-		alonzoGenesis, err := alonzo.NewAlonzoGenesisFromReader(
-			bytes.NewReader(alonzoGenesisBytes),
-		)
-		if err != nil {
-			return err
-		}
-		c.alonzoGenesis = &alonzoGenesis
-	}
-
-	// Load Conway genesis
-	if f, err := c.loadGenesisFromEmbedFS(c.ConwayGenesisFile); err != nil {
-		return err
-	} else if f != nil {
-		defer f.Close()
-		conwayGenesisBytes, err := io.ReadAll(f)
-		if err != nil {
-			return err
-		}
-		conwayGenesisHashBytes := replaceGenesisLineEndings(
-			conwayGenesisBytes,
-		)
-		conwayHash, err := validateGenesisHash(
-			"Conway",
-			c.ConwayGenesisHash,
-			conwayGenesisHashBytes,
-		)
-		if err != nil {
-			return err
-		}
-		c.ConwayGenesisHash = conwayHash
-		conwayGenesis, err := conway.NewConwayGenesisFromReader(
-			bytes.NewReader(conwayGenesisBytes),
-		)
-		if err != nil {
-			return err
-		}
-		c.conwayGenesis = &conwayGenesis
-	}
-	// Load Dijkstra genesis
-	if f, err := c.loadGenesisFromEmbedFS(c.DijkstraGenesisFile); err != nil {
-		return err
-	} else if f != nil {
-		defer f.Close()
-		dijkstraGenesisBytes, err := io.ReadAll(f)
-		if err != nil {
-			return err
-		}
-		dijkstraGenesisHashBytes := replaceGenesisLineEndings(
-			dijkstraGenesisBytes,
-		)
-		dijkstraHash, err := validateGenesisHash(
-			"Dijkstra",
-			c.DijkstraGenesisHash,
-			dijkstraGenesisHashBytes,
-		)
-		if err != nil {
-			return err
-		}
-		c.DijkstraGenesisHash = dijkstraHash
-		dijkstraGenesis, err := dijkstra.NewDijkstraGenesisFromReader(
-			bytes.NewReader(dijkstraGenesisBytes),
-		)
-		if err != nil {
-			return err
-		}
-		c.dijkstraGenesis = &dijkstraGenesis
 	}
 	c.MithrilGenesisVerificationKeyFile = c.resolveOptionalConfigFileFromEmbedFS(
 		c.MithrilGenesisVerificationKeyFile,
@@ -683,7 +777,12 @@ func (c *CardanoNodeConfig) ConwayGenesis() *conway.ConwayGenesis {
 // LoadConwayGenesisFromReader loads a Conway genesis config from an io.Reader
 // This is useful mostly for tests
 func (c *CardanoNodeConfig) LoadConwayGenesisFromReader(r io.Reader) error {
-	conwayGenesis, err := conway.NewConwayGenesisFromReader(r)
+	// Decode one value rather than io.ReadAll: the reader need not reach EOF.
+	var conwayGenesisBytes json.RawMessage
+	if err := json.NewDecoder(r).Decode(&conwayGenesisBytes); err != nil {
+		return err
+	}
+	conwayGenesis, err := loadConwayGenesisFromBytes(conwayGenesisBytes)
 	if err != nil {
 		return err
 	}
@@ -719,18 +818,30 @@ func (c *CardanoNodeConfig) P2PTargets() (
 		c.TargetNumberOfActivePeers
 }
 
+// PraosConsensusMode reports whether the configuration names PraosMode. The
+// reference node then selects the longest valid chain and runs none of the
+// Genesis density, corroboration or patience logic, which is how a network
+// served by a single bootstrap host is meant to be followed. Only an explicit
+// PraosMode counts: a configuration that does not name a mode leaves the
+// decision to the node's own Genesis bootstrap setting.
+func (c *CardanoNodeConfig) PraosConsensusMode() bool {
+	return c != nil && c.ConsensusMode == "PraosMode"
+}
+
 // HardForkEpoch returns the epoch at which the named era's hard fork is
-// scheduled to occur, and whether it is scheduled at all. When
-// ExperimentalHardForksEnabled is not explicitly set to true, no hard fork is
-// scheduled regardless of what the file declares, matching cardano-node's
-// treatment of the TestXHardForkAtEpoch overrides.
+// scheduled to occur, and whether it is scheduled at all.
+//
+// This matches cardano-node, which honours TestShelleyHardForkAtEpoch through
+// TestConwayHardForkAtEpoch whatever ExperimentalHardForksEnabled says, and
+// reads TestDijkstraHardForkAtEpoch only when that flag is explicitly true.
 //
 // Callers asking what the configuration *declares*, rather than what is
 // scheduled, want DeclaredHardForkEpoch. Both read the same field through the
 // same switch so the two questions cannot drift apart.
 func (c *CardanoNodeConfig) HardForkEpoch(era string) (uint64, bool) {
-	if c.ExperimentalHardForksEnabled == nil ||
-		!*c.ExperimentalHardForksEnabled {
+	if era == "dijkstra" &&
+		(c.ExperimentalHardForksEnabled == nil ||
+			!*c.ExperimentalHardForksEnabled) {
 		return 0, false
 	}
 	return c.DeclaredHardForkEpoch(era)
@@ -738,13 +849,8 @@ func (c *CardanoNodeConfig) HardForkEpoch(era string) (uint64, bool) {
 
 // DeclaredHardForkEpoch returns the epoch the configuration declares for the
 // named era's hard fork, and whether the setting is present, ignoring
-// ExperimentalHardForksEnabled.
-//
-// The declaration is a property of the file and some shipped configurations
-// carry one with the flag off: preview sets TestShelleyHardForkAtEpoch to 0
-// alongside ExperimentalHardForksEnabled: False. A caller asking "does this
-// network begin after Byron" needs to see that, while a caller asking "is a
-// fork scheduled" must not. Use HardForkEpoch for the latter.
+// ExperimentalHardForksEnabled. It differs from HardForkEpoch only for
+// Dijkstra, whose override is not scheduled unless that flag is set.
 func (c *CardanoNodeConfig) DeclaredHardForkEpoch(
 	era string,
 ) (uint64, bool) {
@@ -791,11 +897,143 @@ func validateGenesisHash(
 }
 
 func canonicalizeByronGenesisJSON(genesisBytes []byte) ([]byte, error) {
-	var payload any
-	if err := json.Unmarshal(genesisBytes, &payload); err != nil {
+	parsed, err := parseByronCanonicalJSON(genesisBytes)
+	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(payload)
+	return renderByronCanonicalHash(parsed), nil
+}
+
+// loadConwayGenesisFromBytes parses a Conway genesis, tolerating members that
+// cardano-node's lenient JSON parser ignores but gouroboros's strict decoder
+// rejects: the top-level genDelegs and the legacy committee.quorum, both
+// present in Vector Testnet's genesis. Dingo consumes neither. quorum is
+// stripped only beside threshold. Any other unknown member is still rejected.
+func loadConwayGenesisFromBytes(
+	genesisBytes []byte,
+) (conway.ConwayGenesis, error) {
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(genesisBytes, &doc); err != nil {
+		return conway.ConwayGenesis{}, err
+	}
+	stripped := false
+	if _, ok := doc["genDelegs"]; ok {
+		delete(doc, "genDelegs")
+		stripped = true
+	}
+	if rawCommittee, ok := doc["committee"]; ok {
+		var committee map[string]json.RawMessage
+		if err := json.Unmarshal(rawCommittee, &committee); err == nil {
+			// cardano-ledger requires threshold and ignores quorum; stripping
+			// quorum beside a missing or null threshold would decode to a nil
+			// threshold and silently fall back to the default committee quorum.
+			_, hasQuorum := committee["quorum"]
+			threshold, hasThreshold := committee["threshold"]
+			if hasQuorum && hasThreshold &&
+				!bytes.Equal(bytes.TrimSpace(threshold), []byte("null")) {
+				// Re-encoding the map keeps only the last of duplicate
+				// members, hiding an earlier one from the strict decoder.
+				if err := rejectDuplicateJSONMembers(rawCommittee); err != nil {
+					return conway.ConwayGenesis{}, fmt.Errorf(
+						"conway genesis committee: %w", err,
+					)
+				}
+				delete(committee, "quorum")
+				out, err := json.Marshal(committee)
+				if err != nil {
+					return conway.ConwayGenesis{}, err
+				}
+				doc["committee"] = out
+				stripped = true
+			}
+		}
+	}
+	if stripped {
+		if err := rejectDuplicateJSONMembers(genesisBytes); err != nil {
+			return conway.ConwayGenesis{}, fmt.Errorf("conway genesis: %w", err)
+		}
+		out, err := json.Marshal(doc)
+		if err != nil {
+			return conway.ConwayGenesis{}, err
+		}
+		genesisBytes = out
+	}
+	return conway.NewConwayGenesisFromReader(bytes.NewReader(genesisBytes))
+}
+
+// rejectDuplicateJSONMembers returns an error if the JSON object in raw names
+// any member more than once. Only the object's own members are checked.
+func rejectDuplicateJSONMembers(raw []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if _, err := dec.Token(); err != nil {
+		return err
+	}
+	seen := make(map[string]struct{})
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		key, ok := tok.(string)
+		if !ok {
+			return fmt.Errorf("unexpected JSON token %v", tok)
+		}
+		if _, dup := seen[key]; dup {
+			return fmt.Errorf("duplicate member %q", key)
+		}
+		seen[key] = struct{}{}
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// loadByronGenesisFromBytes decodes a Byron genesis document into the
+// gouroboros schema type using the Byron reference's first-occurrence
+// semantics for duplicate object keys, then rejects genesis fields that are
+// unsigned in the reference schema but were parsed as negative.
+//
+// gouroboros's byron.ByronGenesis decoder (like encoding/json generally)
+// resolves duplicate JSON object keys last-occurrence-wins, which disagrees
+// with the Byron reference's first-occurrence rule. Rather than changing
+// that decoder (an upstream gouroboros concern), this
+// pre-filters the parsed document down to one member per key, keeping
+// whichever occurred first, before handing it to the decoder.
+func loadByronGenesisFromBytes(
+	genesisBytes []byte,
+) (byron.ByronGenesis, error) {
+	parsed, err := parseByronCanonicalJSON(genesisBytes)
+	if err != nil {
+		return byron.ByronGenesis{}, err
+	}
+	deduped := renderByronFirstOccurrenceJSON(parsed)
+	genesis, err := byron.NewByronGenesisFromReader(bytes.NewReader(deduped))
+	if err != nil {
+		return byron.ByronGenesis{}, err
+	}
+	if err := validateByronGenesisUnsignedFields(&genesis); err != nil {
+		return byron.ByronGenesis{}, err
+	}
+	return genesis, nil
+}
+
+// validateByronGenesisUnsignedFields rejects Byron genesis fields that the
+// reference schema declares unsigned but which gouroboros parses into a
+// signed Go int, allowing a negative value such as slotDuration "-1" through
+// genesis loading undetected. Left unchecked, a negative SlotDuration reaches
+// a bare uint conversion in the Byron era-shape calculation and wraps to a
+// very large duration instead of failing here, at the point the bad value
+// was introduced.
+func validateByronGenesisUnsignedFields(genesis *byron.ByronGenesis) error {
+	if genesis.BlockVersionData.SlotDuration < 0 {
+		return fmt.Errorf(
+			"byron genesis: slotDuration must not be negative, got %d",
+			genesis.BlockVersionData.SlotDuration,
+		)
+	}
+	return nil
 }
 
 func replaceGenesisLineEndings(genesisBytes []byte) []byte {

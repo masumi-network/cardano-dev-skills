@@ -66,10 +66,18 @@ genesisBootstrap:
   # 0 auto-derives the density window from Shelley genesis params (3k/f).
   windowSlots: 0
   # Independent peers that must report the same recent blocks before a fast
-  # source may drive Genesis selection. 0 disables corroboration (density-only).
+  # source may drive Genesis selection. The default is 1. Setting 0 explicitly
+  # disables corroboration (density-only).
   # Set this to the number of independent snapshot/ledger peers you expect to
   # corroborate the fast source.
   corroborationPeers: 2
+  # Genesis Limit on Patience: disconnect a ChainSync peer that delivers its
+  # advertised progress more slowly than limitOnPatienceRate headers per
+  # second beyond a limitOnPatienceCapacity token allowance. 0 selects the
+  # defaults (1000 tokens, 5 per second: a 200-second allowance).
+  limitOnPatienceEnabled: true
+  limitOnPatienceCapacity: 0
+  limitOnPatienceRate: 0
 ```
 
 Equivalent CLI flags / environment variables:
@@ -77,6 +85,9 @@ Equivalent CLI flags / environment variables:
 - `--genesis-bootstrap-enabled` / `DINGO_GENESIS_BOOTSTRAP_ENABLED`
 - `--genesis-bootstrap-window-slots` / `DINGO_GENESIS_BOOTSTRAP_WINDOW_SLOTS`
 - `--genesis-bootstrap-corroboration-peers` / `DINGO_GENESIS_BOOTSTRAP_CORROBORATION_PEERS`
+- `--genesis-bootstrap-limit-on-patience-enabled` / `DINGO_GENESIS_BOOTSTRAP_LIMIT_ON_PATIENCE_ENABLED`
+- `--genesis-bootstrap-limit-on-patience-capacity` / `DINGO_GENESIS_BOOTSTRAP_LIMIT_ON_PATIENCE_CAPACITY`
+- `--genesis-bootstrap-limit-on-patience-rate` / `DINGO_GENESIS_BOOTSTRAP_LIMIT_ON_PATIENCE_RATE`
 
 ## Topology: fast source + corroborating snapshot
 
@@ -122,6 +133,17 @@ metadata and relay endpoints are validated before outbound startup; malformed
 snapshots fail startup rather than falling back. If a validated snapshot
 produces no peers accepted by peer governance, startup falls back to topology
 `bootstrapPeers` (so keep a bootstrap-peer list configured as a safety net).
+When snapshot peers are accepted, configured bootstrap peers remain dormant
+for the bootstrap recovery cooldown. If snapshot connections cannot sustain
+the minimum hot-peer set afterward, normal bootstrap recovery re-enables them
+when automatic recovery is enabled and no usable warm gossip or ledger peers
+are available to promote.
+
+Local-root groups accept `hotValency` or the legacy `valency` spelling;
+`valency` takes precedence. An omitted `warmValency` uses the hot target.
+An explicit warm target must be at least the hot target and cannot exceed
+the access-point count for a nonempty group. Unknown shared topology fields
+remain accepted.
 
 Dingo accepts cardano-node's version 23 snapshot format. Its network magic must
 match the configured node, its block point must carry a 32-byte hexadecimal
@@ -144,6 +166,14 @@ Snapshot relays must have a host/IP address and an explicit TCP port from 1 to
   transition also logs `chain selection stalled: no selectable peer` and emits
   `chainselection.selected_none`. Investigate whether the snapshot peers are
   reachable and on the same chain as the fast source.
+- **Slow peer disconnected**: a peer that keeps advertising a better tip but
+  delivers headers too slowly logs
+  `chainsync client exhausted the Genesis Limit on Patience, disconnecting`,
+  emits `chainsync.client_patience_exhausted`, increments
+  `dingo_chainsync_patience_exhausted_total`, and is closed with recycle reason
+  `genesis_patience_exhausted`. A peer that goes silent is instead reported as
+  `chainsync.client_stalled` by the two-minute stall watchdog. A caught-up peer
+  waiting for new blocks is not charged.
 - **Exit to Praos**: once the local tip catches up to within the Genesis window
   of the best corroborated peer's *advertised* tip (the network tip — not the
   headers delivered so far), the node logs `exiting Genesis selection mode` and
@@ -155,10 +185,11 @@ fast source, and per-peer density/corroboration for metrics or debugging.
 
 ## Tuning `corroborationPeers`
 
-- **0** — corroboration off. The densest source wins on density alone (prior
-  behavior). Use only when every configured peer is already trusted.
-- **1** — a single independent peer must confirm the fast source. Minimal
-  protection; a lone honest snapshot peer is enough to keep going.
+- **0** — corroboration off. The densest source wins on density alone. Set this
+  explicitly only when every configured peer is already trusted for fork
+  choice.
+- **1 (default)** — a single independent peer must confirm the fast source.
+  Minimal protection; a lone honest snapshot peer is enough to keep going.
 - **2+** — require a quorum of distinct-host peers. More robust against a small
   set of colluding/divergent sources, but the node stalls until that many
   reachable peers agree, so size it to how many independent snapshot peers you
