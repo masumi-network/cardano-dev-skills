@@ -8,7 +8,7 @@ icon: WalletIcon
 
 It supports both **testnet** and **mainnet**, and can be initialized from a mnemonic phrase, BIP-39 entropy, or a raw private key.
 
-> **Provider note** — Chain operations (`getBalance`, `fetchUTXOs`, `signTransfer`, `signPsbt` with `broadcast: true`) require an `IBitcoinProvider`. Ready-to-use implementations are available in `@meshsdk/provider`: `BlockstreamBitcoinProvider` (no API key) and `MaestroBitcoinProvider` (enterprise, API key required). See [Provider Setup](#provider-setup) below.
+> **Provider note** — Chain operations (`getBalance`, `fetchUTXOs`, `signTransfer`, `signPsbt` with `broadcast: true`) require an `IBitcoinProvider`. Ready-to-use implementations are available in `@meshsdk/provider`: `BlockstreamBitcoinProvider` (no API key) and `BlockstreamEnterpriseBitcoinProvider` (OAuth API key). See [Provider Setup](#provider-setup) below.
 
 ---
 
@@ -324,14 +324,14 @@ const zpub = wallet.getAccountZpub();
 ## Provider Setup
 
 `@meshsdk/wallet` exports the `IBitcoinProvider` interface.
-`@meshsdk/provider` ships two ready-to-use implementations:
+`@meshsdk/provider` ships two ready-to-use implementations that share the same Esplora REST methods:
 
-| Provider | Package | API key | Network |
-|----------|---------|---------|---------|
-| `BlockstreamBitcoinProvider` | `@meshsdk/provider` | None (free) | mainnet / testnet |
-| `MaestroBitcoinProvider` | `@meshsdk/provider` | Required | mainnet / testnet |
+| Provider | Package | Auth | Network |
+|----------|---------|------|---------|
+| `BlockstreamBitcoinProvider` | `@meshsdk/provider` | None (public API) | mainnet / testnet |
+| `BlockstreamEnterpriseBitcoinProvider` | `@meshsdk/provider` | OAuth `clientId` + `clientSecret` | mainnet / testnet |
 
-Both implement `IBitcoinProvider` and are plug-and-play with `BitcoinHeadlessWallet`.
+Both implement `IBitcoinProvider` and are plug-and-play with `BitcoinHeadlessWallet`. See [Blockstream Bitcoin Provider](/providers/bitcoin-blockstream) and [Blockstream Enterprise](/providers/bitcoin-blockstream-enterprise).
 
 ### Blockstream (no API key)
 
@@ -353,16 +353,17 @@ const balance = await wallet.getBalance();
 // { confirmed: "100000", unconfirmed: "0", total: "100000" }
 ```
 
-### Maestro (API key required)
+### Blockstream Enterprise (API key required)
 
-Uses [Maestro's](https://docs.gomaestro.org/bitcoin) Esplora-compatible Bitcoin API — enterprise-grade, higher rate limits, mempool monitoring.
+Uses [Blockstream Explorer Enterprise](https://help.blockstream.com/blockstream-explorer-api/use-explorer-api/make-a-rest-api-request-with-your-api-keys). Same Esplora methods as the public provider, with OAuth client credentials against `https://enterprise.blockstream.info`.
 
 ```ts
 import { BitcoinHeadlessWallet } from "@meshsdk/wallet";
-import { MaestroBitcoinProvider } from "@meshsdk/provider";
+import { BlockstreamEnterpriseBitcoinProvider } from "@meshsdk/provider";
 
-const provider = new MaestroBitcoinProvider({
-  apiKey:  "your-maestro-api-key",
+const provider = new BlockstreamEnterpriseBitcoinProvider({
+  clientId: "your-client-id",
+  clientSecret: "your-client-secret",
   network: "mainnet", // "mainnet" | "testnet"
 });
 
