@@ -20,7 +20,10 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"time"
 
+	"github.com/blinklabs-io/dingo/chainselection"
+	"github.com/blinklabs-io/dingo/database"
 	"github.com/blinklabs-io/dingo/event"
 	"github.com/blinklabs-io/dingo/ledger"
 	"github.com/blinklabs-io/dingo/ledger/forging"
@@ -29,6 +32,32 @@ import (
 	lcommon "github.com/blinklabs-io/gouroboros/ledger/common"
 	gdijkstra "github.com/blinklabs-io/gouroboros/ledger/dijkstra"
 )
+
+func validateLeiosPersistenceRetention(
+	retention, securityParam uint64,
+	activeSlotCoeff *big.Rat,
+) error {
+	if retention == 0 {
+		return nil
+	}
+	minimum := chainselection.GenesisWindowSlotsForParams(
+		securityParam,
+		activeSlotCoeff,
+	)
+	if minimum == 0 {
+		return errors.New(
+			"leios persistence retention requires known stability parameters",
+		)
+	}
+	if retention < minimum {
+		return fmt.Errorf(
+			"leios persistence retention %d slots is below the stability window of %d slots",
+			retention,
+			minimum,
+		)
+	}
+	return nil
+}
 
 // leiosStakeDistributionAdapter adapts ledger.LedgerState to
 // leios.StakeDistributionProvider, reusing the same txn-scoped ledger
@@ -83,7 +112,7 @@ func (a *leiosKeyProviderAdapter) GetLeiosKeys(
 	if db == nil {
 		return nil, errors.New("database unavailable")
 	}
-	txn := db.MetadataTxn(false)
+	txn := db.MetadataTxn(context.Background(), false)
 	if txn == nil {
 		return nil, errors.New("metadata transaction unavailable")
 	}
@@ -104,89 +133,179 @@ func (a *leiosKeyProviderAdapter) GetLeiosKeys(
 	)
 }
 
-// leiosCommitteeParamsAdapter adapts ledger.LedgerState to
-// leios.CommitteeParamsProvider. It revalidates the tau < sigma_c
-// invariant on every read so an invalid parameter combination disables
-// committee computation rather than silently mis-tallying.
+// leiosCommitteeParamsAdapter adapts the historical Dijkstra parameters in
+// LedgerState's metadata store to leios.CommitteeParamsProvider.
 type leiosCommitteeParamsAdapter struct {
 	ledgerState *ledger.LedgerState
 }
 
-func (a *leiosCommitteeParamsAdapter) LeiosCommitteeParameters() (
-	*big.Rat,
-	*big.Rat,
-	error,
-) {
-	if a.ledgerState == nil {
-		return nil, nil, errors.New("ledger state unavailable")
+func (a *leiosCommitteeParamsAdapter) LeiosCommitteeParameters(
+	snapshotEpoch uint64,
+) (uint16, *big.Rat, error) {
+	pparams, err := a.dijkstraPParams(snapshotEpoch)
+	if err != nil {
+		return 0, nil, err
 	}
-	pparams := a.ledgerState.GetCurrentPParams()
-	dijkstraPParams, ok := pparams.(*gdijkstra.DijkstraProtocolParameters)
-	if !ok {
-		return nil, nil, fmt.Errorf(
-			"leios committee parameters require the dijkstra era, current pparams are %T",
-			pparams,
-		)
-	}
-	return leiosCommitteeParamsFromPParams(dijkstraPParams)
+	return leiosCommitteeParamsFromPParams(pparams)
 }
 
-// CIP-0164 default Leios committee parameters, used when the Dijkstra
-// genesis / protocol parameters do not configure them. The Dijkstra genesis
-// is immutable network configuration and the current cardano-ledger
-// DijkstraGenesis does not carry these fields at all — the musashi/prototype
-// genesis defines only the refScript parameters — so the reference
-// implementation falls back to the CIP-0164 defaults internally rather than
-// reading them from genesis. dingo mirrors that here so committee formation
-// and certification work without modifying the (hash-pinned) genesis file.
-//   - committee stake coverage (sigma_c) = 0.99 (top-stake coverage)
-//   - quorum stake threshold  (tau)     = 0.75 ("75% certification threshold")
-//
-// A genesis that does configure either field overrides the corresponding
-// default. See issue #2836.
-var (
-	defaultLeiosCommitteeStakeCoverage = big.NewRat(99, 100)
-	defaultLeiosQuorumStakeThreshold   = big.NewRat(3, 4)
-)
+func (a *leiosCommitteeParamsAdapter) LeiosVotingParameters(
+	epoch uint64,
+) (time.Duration, time.Duration, error) {
+	pparams, err := a.dijkstraPParams(epoch)
+	if err != nil {
+		return 0, 0, err
+	}
+	return leiosVotingPeriodsFromPParams(epoch, pparams)
+}
 
-// leiosCommitteeParamsFromPParams resolves the Leios committee stake coverage
-// (sigma_c) and quorum stake threshold (tau) from Dijkstra protocol
-// parameters, falling back to the CIP-0164 defaults for any field the genesis
-// leaves unset (see defaultLeiosCommitteeStakeCoverage /
-// defaultLeiosQuorumStakeThreshold). It revalidates the configured values via
-// ValidateLeiosCommitteeParameters and re-checks the tau < sigma_c invariant
-// after applying defaults so a partial genesis configuration cannot yield an
-// invalid combination. Both returned values are always non-nil, which is what
-// lets committee formation and certification proceed on the prototype/musashi
-// deployment whose genesis carries only the refScript fields (issue #2836).
-func leiosCommitteeParamsFromPParams(
-	dijkstraPParams *gdijkstra.DijkstraProtocolParameters,
-) (*big.Rat, *big.Rat, error) {
-	if err := dijkstraPParams.ValidateLeiosCommitteeParameters(); err != nil {
-		return nil, nil, err
+func (a *leiosCommitteeParamsAdapter) dijkstraPParams(
+	epoch uint64,
+) (_ *gdijkstra.DijkstraProtocolParameters, err error) {
+	if a.ledgerState == nil {
+		return nil, errors.New("ledger state unavailable")
 	}
-	// Return fresh copies so callers cannot mutate the shared defaults.
-	sigmaC := new(big.Rat).Set(defaultLeiosCommitteeStakeCoverage)
-	if cov := dijkstraPParams.CommitteeStakeCoverage; cov != nil &&
-		cov.Rat != nil {
-		sigmaC = cov.Rat
+	db := a.ledgerState.Database()
+	if db == nil {
+		return nil, errors.New("database unavailable")
 	}
-	tau := new(big.Rat).Set(defaultLeiosQuorumStakeThreshold)
-	if quorum := dijkstraPParams.QuorumStakeThreshold; quorum != nil &&
-		quorum.Rat != nil {
-		tau = quorum.Rat
+	txn := db.MetadataTxn(context.Background(), false)
+	if txn == nil {
+		return nil, errors.New("metadata transaction unavailable")
 	}
-	// Defaulting a single unset field against a configured counterpart could
-	// break the tau < sigma_c invariant that ValidateLeiosCommitteeParameters
-	// only enforces across configured values; re-check after defaulting.
-	if tau.Cmp(sigmaC) >= 0 {
-		return nil, nil, fmt.Errorf(
-			"leios quorum stake threshold (%s) must be less than committee stake coverage (%s)",
-			tau.RatString(),
-			sigmaC.RatString(),
+	defer func() {
+		if rollbackErr := txn.Rollback(); rollbackErr != nil {
+			err = errors.Join(
+				err,
+				fmt.Errorf(
+					"release leios parameter transaction: %w",
+					rollbackErr,
+				),
+			)
+		}
+	}()
+	return leiosDijkstraPParamsForEpoch(db, epoch, txn)
+}
+
+// leiosVotingPeriodsFromPParams returns the CIP-164 header and vote periods,
+// L_hdr and L_vote, from the announcement and vote period lengths, both in
+// milliseconds. Local voting opens three header periods after the announcing
+// slot begins, the wait that lets a competing header for the slot appear, and
+// closes one vote period later.
+func leiosVotingPeriodsFromPParams(
+	epoch uint64,
+	pparams *gdijkstra.DijkstraProtocolParameters,
+) (time.Duration, time.Duration, error) {
+	if pparams == nil {
+		return 0, 0, fmt.Errorf(
+			"leios voting parameters for epoch %d are unavailable",
+			epoch,
 		)
 	}
-	return sigmaC, tau, nil
+	headerPeriod := time.Duration(
+		pparams.LeiosAnnouncementPeriodLength,
+	) * time.Millisecond
+	votePeriod := time.Duration(
+		pparams.LeiosVotePeriodLength,
+	) * time.Millisecond
+	if headerPeriod <= 0 || votePeriod <= 0 {
+		return 0, 0, fmt.Errorf(
+			"invalid Leios voting periods for epoch %d: header %s, vote %s",
+			epoch,
+			headerPeriod,
+			votePeriod,
+		)
+	}
+	return headerPeriod, votePeriod, nil
+}
+
+func leiosDijkstraPParamsForEpoch(
+	db *database.Database,
+	epoch uint64,
+	txn *database.Txn,
+) (*gdijkstra.DijkstraProtocolParameters, error) {
+	decode := func(raw []byte) (lcommon.ProtocolParameters, error) {
+		var decoded gdijkstra.DijkstraProtocolParameters
+		if err := decoded.UnmarshalCBOR(raw); err != nil {
+			return nil, err
+		}
+		return &decoded, nil
+	}
+	pparams, err := db.GetPParams(
+		epoch,
+		uint(gdijkstra.EraIdDijkstra),
+		decode,
+		txn,
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"load Dijkstra parameters for Leios epoch %d: %w",
+			epoch,
+			err,
+		)
+	}
+	if pparams == nil {
+		// At the Dijkstra transition, a preceding Mark snapshot can predate
+		// the first Dijkstra row. Use the era's initial parameter set.
+		rows, listErr := db.Metadata().ListPParamsForEra(
+			uint(gdijkstra.EraIdDijkstra),
+			txn.Metadata(),
+		)
+		if listErr != nil {
+			return nil, fmt.Errorf(
+				"list Dijkstra parameters for Leios epoch %d: %w",
+				epoch,
+				listErr,
+			)
+		}
+		if len(rows) == 0 {
+			return nil, fmt.Errorf(
+				"leios epoch %d has no Dijkstra parameter rows",
+				epoch,
+			)
+		}
+		decoded, decodeErr := decode(rows[0].Cbor)
+		if decodeErr != nil {
+			return nil, fmt.Errorf(
+				"decode initial Dijkstra parameters for Leios epoch %d: %w",
+				epoch,
+				decodeErr,
+			)
+		}
+		pparams = decoded
+	}
+	dijkstraPParams, ok := pparams.(*gdijkstra.DijkstraProtocolParameters)
+	if !ok || dijkstraPParams == nil {
+		return nil, fmt.Errorf(
+			"leios epoch %d has no Dijkstra protocol parameters",
+			epoch,
+		)
+	}
+	return dijkstraPParams, nil
+}
+
+// leiosCommitteeParamsFromPParams extracts the Dijkstra committee size and
+// quorum threshold. These consensus values must be present in the historical
+// parameters captured for the committee's mark snapshot.
+func leiosCommitteeParamsFromPParams(
+	dijkstraPParams *gdijkstra.DijkstraProtocolParameters,
+) (uint16, *big.Rat, error) {
+	if dijkstraPParams == nil {
+		return 0, nil, errors.New("nil Dijkstra protocol parameters")
+	}
+	committeeSize := dijkstraPParams.LeiosCommitteeSize
+	if committeeSize == 0 {
+		return 0, nil, errors.New("leios committee size is zero")
+	}
+	if dijkstraPParams.LeiosQuorumStakeThreshold == nil ||
+		dijkstraPParams.LeiosQuorumStakeThreshold.Rat == nil {
+		return 0, nil, errors.New("leios quorum stake threshold is missing")
+	}
+	tau := dijkstraPParams.LeiosQuorumStakeThreshold.Rat
+	if tau.Sign() < 0 || tau.Cmp(big.NewRat(1, 1)) > 0 {
+		return 0, nil, leios.ErrInvalidQuorumStakeThreshold
+	}
+	return committeeSize, new(big.Rat).Set(tau), nil
 }
 
 // initLeiosVoteManager builds and starts the Leios vote manager and wires
@@ -198,6 +317,9 @@ func (n *Node) initLeiosVoteManager(ctx context.Context) error {
 			ledgerState: n.ledgerState,
 		},
 	}
+	paramsAdapter := &leiosCommitteeParamsAdapter{
+		ledgerState: n.ledgerState,
+	}
 	mgr, err := leios.NewVoteManager(leios.VoteManagerConfig{
 		Logger:        n.config.logger,
 		EventBus:      n.eventBus,
@@ -208,19 +330,17 @@ func (n *Node) initLeiosVoteManager(ctx context.Context) error {
 		EpochProvider: &epochInfoAdapter{
 			ledgerState: n.ledgerState,
 		},
-		ParamsProvider: &leiosCommitteeParamsAdapter{
-			ledgerState: n.ledgerState,
-		},
+		ParamsProvider:       paramsAdapter,
+		VotingParamsProvider: paramsAdapter,
 		// LedgerState satisfies leios.SlotProvider directly; the slot
 		// window keeps fabricated far-past/future votes away from
 		// committee computation and the stake snapshot queries behind
 		// it.
 		SlotProvider: n.ledgerState,
-		// Source the vote-acceptance past bound from the same pipeline
-		// timing the pipeline manager uses, so the two components admit
-		// votes over the same window and cannot drift.
-		VoteWindowSlots: n.leiosPipelineTiming().VoteWindowSlots,
-		PromRegistry:    n.config.promRegistry,
+		// Relayed votes remain useful until the pipeline certification
+		// deadline. Local voting uses the Dijkstra wall-clock periods above.
+		CertifyByDeadlineSlots: n.leiosPipelineTiming().CertifyByDeadlineSlots,
+		PromRegistry:           n.config.promRegistry,
 	})
 	if err != nil {
 		return fmt.Errorf("create leios vote manager: %w", err)
@@ -229,6 +349,7 @@ func (n *Node) initLeiosVoteManager(ctx context.Context) error {
 		return fmt.Errorf("start leios vote manager: %w", err)
 	}
 	n.leiosVoteManager = mgr
+	n.leiosCertificateVerifier.Store(mgr)
 	// Deliberately not wired into ouroboros here. Run initializes the Leios
 	// managers before it constructs Ouroboros, so reaching for the instance
 	// at this point dereferences a nil pointer. attachLeiosHandlers installs
@@ -241,7 +362,7 @@ func (n *Node) initLeiosVoteManager(ctx context.Context) error {
 	// stale subscription from every earlier cycle stays permanently
 	// active alongside the new one, and a single emitted vote gets
 	// enqueued (and diffused to peers) once per accumulated subscription.
-	n.leiosVoteEmittedSubId = n.eventBus.SubscribeFunc(
+	n.leiosVoteEmittedSubId = n.subscribeRequiredEvent(
 		leios.VoteEmittedEventType,
 		func(evt event.Event) {
 			data, ok := evt.Data.(leios.VoteEmittedEvent)
@@ -256,7 +377,7 @@ func (n *Node) initLeiosVoteManager(ctx context.Context) error {
 	// forwards it, so a block producer behind that relay never observes
 	// quorum. Tracked and unsubscribed alongside leiosVoteEmittedSubId for
 	// the same live-lifecycle-reinit reason.
-	n.leiosVoteReceivedSubId = n.eventBus.SubscribeFunc(
+	n.leiosVoteReceivedSubId = n.subscribeRequiredEvent(
 		leios.VoteReceivedEventType,
 		func(evt event.Event) {
 			data, ok := evt.Data.(leios.VoteReceivedEvent)
@@ -279,13 +400,45 @@ func (n *Node) initLeiosVoteManager(ctx context.Context) error {
 	return nil
 }
 
-// leiosPipelineTiming returns the configured pipeline timing, falling back
-// to the provisional defaults when no override is set.
+// leiosPipelineTiming keeps explicit overrides in slots and converts the
+// one-second reference defaults to the configured Shelley slot duration.
 func (n *Node) leiosPipelineTiming() leios.PipelineTiming {
 	if n.config.leiosPipelineTiming != nil {
 		return *n.config.leiosPipelineTiming
 	}
-	return leios.DefaultPipelineTiming()
+	defaults := leios.DefaultPipelineTiming()
+	if n.config.cardanoNodeConfig == nil {
+		return defaults
+	}
+	genesis := n.config.cardanoNodeConfig.ShelleyGenesis()
+	if genesis == nil || genesis.SlotLength.Rat == nil ||
+		genesis.SlotLength.Sign() <= 0 {
+		return defaults
+	}
+	timing := defaults
+	for _, window := range []*uint64{
+		&timing.ProduceWindowSlots,
+		&timing.DiffuseWindowSlots,
+		&timing.VoteWindowSlots,
+		&timing.CertifyByDeadlineSlots,
+		&timing.RbInclusionWindowSlots,
+		&timing.InstanceTTLSlots,
+	} {
+		slots := new(big.Rat).Quo(
+			new(big.Rat).SetUint64(*window),
+			genesis.SlotLength.Rat,
+		)
+		var rounded, remainder big.Int
+		rounded.QuoRem(slots.Num(), slots.Denom(), &remainder)
+		if remainder.Sign() != 0 {
+			rounded.Add(&rounded, big.NewInt(1))
+		}
+		if !rounded.IsUint64() {
+			return defaults
+		}
+		*window = rounded.Uint64()
+	}
+	return timing
 }
 
 // initLeiosPipelineManager builds and starts the Leios pipeline manager and
