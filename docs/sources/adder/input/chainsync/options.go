@@ -16,6 +16,7 @@ package chainsync
 
 import (
 	"github.com/blinklabs-io/adder/plugin"
+	"github.com/blinklabs-io/adder/state"
 	ocommon "github.com/blinklabs-io/gouroboros/protocol/common"
 )
 
@@ -24,7 +25,7 @@ type ChainSyncOptionFunc func(*ChainSync)
 // WithLogger specifies the logger object to use for logging messages
 func WithLogger(logger plugin.Logger) ChainSyncOptionFunc {
 	return func(c *ChainSync) {
-		c.logger = logger
+		c.SetLogger(logger)
 	}
 }
 
@@ -39,6 +40,15 @@ func WithNetwork(network string) ChainSyncOptionFunc {
 func WithNetworkMagic(networkMagic uint32) ChainSyncOptionFunc {
 	return func(c *ChainSync) {
 		c.networkMagic = networkMagic
+	}
+}
+
+// WithEraHistory specifies slot-to-epoch boundaries for a custom network.
+// It overrides history inferred from WithNetwork or WithNetworkMagic.
+func WithEraHistory(history EraHistory) ChainSyncOptionFunc {
+	return func(c *ChainSync) {
+		c.eraHistory = history
+		c.eraHistorySet = true
 	}
 }
 
@@ -121,5 +131,46 @@ func WithDelayConfirmations(count uint) ChainSyncOptionFunc {
 func WithReconnectCallback(callback func()) ChainSyncOptionFunc {
 	return func(c *ChainSync) {
 		c.reconnectCallback = callback
+	}
+}
+
+// WithKupoUrl specifies the optional Kupo endpoint for resolving transaction inputs.
+func WithKupoUrl(
+	url string,
+) ChainSyncOptionFunc {
+	return func(c *ChainSync) { c.kupoUrl = url }
+}
+
+// WithStateStore specifies a state.Store used to persist the chainsync
+// cursor across restarts. When set and the store already holds a cursor,
+// it is used as the sole intersect point and overrides whatever
+// WithIntersectTip or WithIntersectPoints configured, so the sync resumes
+// from the last confirmed block instead of restarting from either.
+func WithStateStore(store state.Store) ChainSyncOptionFunc {
+	return func(c *ChainSync) {
+		c.stateStore = store
+		c.stateStoreOwned = false
+		c.openStateStore = nil
+	}
+}
+
+func withOwnedStateStore(
+	store state.Store,
+	open func() (state.Store, error),
+) ChainSyncOptionFunc {
+	return func(c *ChainSync) {
+		c.stateStore = store
+		c.stateStoreOwned = true
+		c.openStateStore = open
+	}
+}
+
+// WithStateKey overrides the key used to store the chainsync cursor in
+// the configured state.Store. This allows multiple ChainSync instances to
+// share a single store without their cursors colliding. Defaults to
+// "chainsync-cursor".
+func WithStateKey(key string) ChainSyncOptionFunc {
+	return func(c *ChainSync) {
+		c.stateKey = key
 	}
 }

@@ -32,7 +32,10 @@ import (
 // Protobuf fallback helpers: used when NativeBytes is not available and we
 // must construct adder events from the parsed protobuf fields.
 
-func pbBlockContext(header *cardanopb.BlockHeader, networkMagic uint32) event.BlockContext {
+func pbBlockContext(
+	header *cardanopb.BlockHeader,
+	networkMagic uint32,
+) event.BlockContext {
 	return event.BlockContext{
 		BlockNumber:  header.GetHeight(),
 		SlotNumber:   header.GetSlot(),
@@ -65,7 +68,10 @@ func pbTransactionContext(
 	}
 }
 
-func pbTransactionEvent(blockHash []byte, tx *cardanopb.Tx) event.TransactionEvent {
+func pbTransactionEvent(
+	blockHash []byte,
+	tx *cardanopb.Tx,
+) event.TransactionEvent {
 	inputs := pbInputsToLedger(tx.GetInputs())
 	outputs := pbOutputsToLedger(tx.GetOutputs())
 	refInputs := pbInputsToLedger(tx.GetReferenceInputs())
@@ -82,7 +88,14 @@ func pbTransactionEvent(blockHash []byte, tx *cardanopb.Tx) event.TransactionEve
 		// guards. VotingProcedures() always returns nil here because utxorpc v1alpha does
 		// not expose votes in cardanopb.Tx; this will be populated once go-codegen
 		// upgrades to a version that includes them (currently available in v1beta).
-		Transaction:  pbBuildTransaction(tx, inputs, outputs, refInputs, poolCerts, ttl),
+		Transaction: pbBuildTransaction(
+			tx,
+			inputs,
+			outputs,
+			refInputs,
+			poolCerts,
+			ttl,
+		),
 		BlockHash:    hex.EncodeToString(blockHash),
 		Fee:          pbFee(tx),
 		Inputs:       inputs,
@@ -114,13 +127,19 @@ func pbGovernanceContext(
 	}
 }
 
-func pbGovernanceEvent(blockHash []byte, tx *cardanopb.Tx) event.GovernanceEvent {
+func pbGovernanceEvent(
+	blockHash []byte,
+	tx *cardanopb.Tx,
+) event.GovernanceEvent {
 	evt := event.GovernanceEvent{
 		BlockHash: hex.EncodeToString(blockHash),
 	}
 	for i, prop := range tx.GetProposals() {
 		//nolint:gosec // proposals per tx bounded by Cardano protocol
-		evt.ProposalProcedures = append(evt.ProposalProcedures, pbProposalProcedure(prop, uint32(i)))
+		evt.ProposalProcedures = append(
+			evt.ProposalProcedures,
+			pbProposalProcedure(prop, uint32(i)),
+		)
 	}
 	drep, voteDel, committee := pbGovernanceCertificates(tx.GetCertificates())
 	evt.DRepCertificates = drep
@@ -129,7 +148,10 @@ func pbGovernanceEvent(blockHash []byte, tx *cardanopb.Tx) event.GovernanceEvent
 	return evt
 }
 
-func pbProposalProcedure(prop *cardanopb.GovernanceActionProposal, idx uint32) event.ProposalProcedureData {
+func pbProposalProcedure(
+	prop *cardanopb.GovernanceActionProposal,
+	idx uint32,
+) event.ProposalProcedureData {
 	data := event.ProposalProcedureData{
 		Index:      idx,
 		ActionType: pbGovActionType(prop),
@@ -184,7 +206,9 @@ func pbStakeCredentialHex(cred *cardanopb.StakeCredential) string {
 	return ""
 }
 
-func pbGovActionData(prop *cardanopb.GovernanceActionProposal) event.GovActionData {
+func pbGovActionData(
+	prop *cardanopb.GovernanceActionProposal,
+) event.GovActionData {
 	ga := prop.GetGovAction()
 	if ga == nil {
 		return event.GovActionData{}
@@ -239,7 +263,7 @@ func pbGovActionData(prop *cardanopb.GovernanceActionProposal) event.GovActionDa
 		for _, nc := range uca.GetNewCommitteeCredentials() {
 			d.MembersToAdd = append(d.MembersToAdd, event.CommitteeMember{
 				Credential: pbStakeCredentialHex(nc.GetCommitteeColdCredential()),
-				Epoch:      uint(nc.GetExpiresEpoch()),
+				Epoch:      uint64(nc.GetExpiresEpoch()),
 			})
 		}
 		if qt := uca.GetNewCommitteeThreshold(); qt != nil {
@@ -403,25 +427,36 @@ type pbTransaction struct {
 	isValid   bool
 }
 
-func (t *pbTransaction) Id() lcommon.Blake2b256                      { return t.txHash }
-func (t *pbTransaction) Inputs() []lcommon.TransactionInput          { return t.inputs }
-func (t *pbTransaction) Outputs() []lcommon.TransactionOutput        { return t.outputs }
+func (t *pbTransaction) Id() lcommon.Blake2b256 { return t.txHash }
+
+func (t *pbTransaction) Inputs() []lcommon.TransactionInput { return t.inputs }
+
+func (t *pbTransaction) Outputs() []lcommon.TransactionOutput { return t.outputs }
+
 func (t *pbTransaction) ReferenceInputs() []lcommon.TransactionInput { return t.refInputs }
-func (t *pbTransaction) Certificates() []lcommon.Certificate         { return t.certs }
-func (t *pbTransaction) Fee() *big.Int                               { return t.fee }
-func (t *pbTransaction) TTL() uint64                                 { return t.ttl }
+
+func (t *pbTransaction) Certificates() []lcommon.Certificate { return t.certs }
+
+func (t *pbTransaction) Fee() *big.Int { return t.fee }
+
+func (t *pbTransaction) TTL() uint64 { return t.ttl }
 
 // Transaction-level methods (not TransactionBody).
-func (t *pbTransaction) Type() int                                { return 0 }
-func (t *pbTransaction) Cbor() []byte                             { return nil }
-func (t *pbTransaction) Hash() lcommon.Blake2b256                 { return t.txHash }
-func (t *pbTransaction) LeiosHash() lcommon.Blake2b256            { return t.txHash }
-func (t *pbTransaction) Metadata() lcommon.TransactionMetadatum   { return nil }
-func (t *pbTransaction) AuxiliaryData() lcommon.AuxiliaryData     { return nil }
-func (t *pbTransaction) IsValid() bool                            { return t.isValid }
+func (t *pbTransaction) Type() int    { return 0 }
+func (t *pbTransaction) Cbor() []byte { return nil }
+
+func (t *pbTransaction) Hash() lcommon.Blake2b256 { return t.txHash }
+
+func (t *pbTransaction) LeiosHash() lcommon.Blake2b256          { return t.txHash }
+func (t *pbTransaction) Metadata() lcommon.TransactionMetadatum { return nil }
+func (t *pbTransaction) AuxiliaryData() lcommon.AuxiliaryData   { return nil }
+
+func (t *pbTransaction) IsValid() bool { return t.isValid }
+
 func (t *pbTransaction) Consumed() []lcommon.TransactionInput     { return t.inputs }
 func (t *pbTransaction) Produced() []lcommon.Utxo                 { return nil }
 func (t *pbTransaction) Witnesses() lcommon.TransactionWitnessSet { return nil }
+
 func (t *pbTransaction) ProtocolParameterUpdates() (uint64, map[lcommon.Blake2b224]lcommon.ProtocolParameterUpdate) {
 	return 0, nil
 }
@@ -430,7 +465,9 @@ func (t *pbTransaction) ProtocolParameterUpdates() (uint64, map[lcommon.Blake2b2
 // gouroboros ledger Certificate types for use in event.TransactionEvent.Certificates.
 // Only StakeDelegation, PoolRetirement, and PoolRegistration are mapped here;
 // governance certificates are handled separately via pbGovernanceCertificates.
-func pbPoolCertificatesToLedger(certs []*cardanopb.Certificate) []lcommon.Certificate {
+func pbPoolCertificatesToLedger(
+	certs []*cardanopb.Certificate,
+) []lcommon.Certificate {
 	var out []lcommon.Certificate
 	for _, cert := range certs {
 		if cert == nil {
@@ -472,8 +509,12 @@ func pbPoolCertificatesToLedger(certs []*cardanopb.Certificate) []lcommon.Certif
 
 // pbMultiAssetsToLedger converts UTxO RPC protobuf multi-asset data to the
 // gouroboros MultiAsset type used by output.Assets().
-func pbMultiAssetsToLedger(assets []*cardanopb.Multiasset) *lcommon.MultiAsset[lcommon.MultiAssetTypeOutput] {
-	data := make(map[lcommon.Blake2b224]map[cbor.ByteString]lcommon.MultiAssetTypeOutput)
+func pbMultiAssetsToLedger(
+	assets []*cardanopb.Multiasset,
+) *lcommon.MultiAsset[lcommon.MultiAssetTypeOutput] {
+	data := make(
+		map[lcommon.Blake2b224]map[cbor.ByteString]lcommon.MultiAssetTypeOutput,
+	)
 	for _, ma := range assets {
 		if len(ma.GetPolicyId()) == 0 {
 			continue
@@ -486,7 +527,9 @@ func pbMultiAssetsToLedger(assets []*cardanopb.Multiasset) *lcommon.MultiAsset[l
 		}
 		for _, asset := range ma.GetAssets() {
 			name := cbor.NewByteString(asset.GetName())
-			assetMap[name] = new(big.Int).SetUint64(utxorpcBigIntToUint64(asset.GetQuantity()))
+			assetMap[name] = new(
+				big.Int,
+			).SetUint64(utxorpcBigIntToUint64(asset.GetQuantity()))
 		}
 	}
 	ma := lcommon.NewMultiAsset(data)
@@ -511,7 +554,9 @@ func pbInputsToLedger(inputs []*cardanopb.TxInput) []lcommon.TransactionInput {
 // pbOutputsToLedger converts UTxO RPC protobuf outputs to gouroboros ledger outputs.
 // Outputs with multi-asset data use MaryTransactionOutput so that output.Assets()
 // returns the correct policy/asset information for filter/cardano matchers.
-func pbOutputsToLedger(outputs []*cardanopb.TxOutput) []lcommon.TransactionOutput {
+func pbOutputsToLedger(
+	outputs []*cardanopb.TxOutput,
+) []lcommon.TransactionOutput {
 	if len(outputs) == 0 {
 		return nil
 	}
@@ -563,7 +608,7 @@ func pbGovernanceCertificates(certs []*cardanopb.Certificate) (
 			drep = append(drep, event.DRepCertificateData{
 				CertificateType: "Registration",
 				DRepHash:        pbStakeCredentialHex(d.GetDrepCredential()),
-				Deposit:         safeUint64ToInt64(utxorpcBigIntToUint64(d.GetCoin())),
+				Deposit:         utxorpcBigIntToUint64(d.GetCoin()),
 				Anchor:          pbAnchor(d.GetAnchor()),
 			})
 		case *cardanopb.Certificate_UnregDrepCert:
@@ -571,7 +616,7 @@ func pbGovernanceCertificates(certs []*cardanopb.Certificate) (
 			drep = append(drep, event.DRepCertificateData{
 				CertificateType: "Deregistration",
 				DRepHash:        pbStakeCredentialHex(d.GetDrepCredential()),
-				Deposit:         safeUint64ToInt64(utxorpcBigIntToUint64(d.GetCoin())),
+				Deposit:         utxorpcBigIntToUint64(d.GetCoin()),
 			})
 		case *cardanopb.Certificate_UpdateDrepCert:
 			d := c.UpdateDrepCert
@@ -589,10 +634,10 @@ func pbGovernanceCertificates(certs []*cardanopb.Certificate) (
 			voteDel = append(voteDel, pbVoteDelegation("StakeVoteDelegation", d.GetStakeCredential(), d.GetDrep(), d.GetPoolKeyhash(), 0))
 		case *cardanopb.Certificate_VoteRegDelegCert:
 			d := c.VoteRegDelegCert
-			voteDel = append(voteDel, pbVoteDelegation("VoteRegistrationDelegation", d.GetStakeCredential(), d.GetDrep(), nil, safeUint64ToInt64(utxorpcBigIntToUint64(d.GetCoin()))))
+			voteDel = append(voteDel, pbVoteDelegation("VoteRegistrationDelegation", d.GetStakeCredential(), d.GetDrep(), nil, utxorpcBigIntToUint64(d.GetCoin())))
 		case *cardanopb.Certificate_StakeVoteRegDelegCert:
 			d := c.StakeVoteRegDelegCert
-			voteDel = append(voteDel, pbVoteDelegation("StakeVoteRegistrationDelegation", d.GetStakeCredential(), d.GetDrep(), d.GetPoolKeyhash(), safeUint64ToInt64(utxorpcBigIntToUint64(d.GetCoin()))))
+			voteDel = append(voteDel, pbVoteDelegation("StakeVoteRegistrationDelegation", d.GetStakeCredential(), d.GetDrep(), d.GetPoolKeyhash(), utxorpcBigIntToUint64(d.GetCoin())))
 
 		case *cardanopb.Certificate_AuthCommitteeHotCert:
 			d := c.AuthCommitteeHotCert
@@ -618,7 +663,7 @@ func pbVoteDelegation(
 	stakeCred *cardanopb.StakeCredential,
 	drep *cardanopb.DRep,
 	poolKeyhash []byte,
-	deposit int64,
+	deposit uint64,
 ) event.VoteDelegationCertificateData {
 	data := event.VoteDelegationCertificateData{
 		CertificateType: certType,
@@ -647,13 +692,6 @@ func pbVoteDelegation(
 		}
 	}
 	return data
-}
-
-func safeUint64ToInt64(v uint64) int64 {
-	if v > uint64(math.MaxInt64) {
-		return math.MaxInt64
-	}
-	return int64(v) //nolint:gosec // clamped above
 }
 
 func utxorpcBigIntToUint64(b *cardanopb.BigInt) uint64 {

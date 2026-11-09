@@ -27,7 +27,7 @@ type TelegramOptionFunc func(*TelegramOutput)
 // WithLogger specifies the logger object to use for logging messages
 func WithLogger(logger plugin.Logger) TelegramOptionFunc {
 	return func(t *TelegramOutput) {
-		t.logger = logger
+		t.SetLogger(logger)
 	}
 }
 
@@ -45,6 +45,21 @@ func WithBotToken(token string) TelegramOptionFunc {
 func WithChatID(chatID int64) TelegramOptionFunc {
 	return func(t *TelegramOutput) {
 		t.chatID = chatID
+	}
+}
+
+// WithSettingsFile sets the local YAML file used for notification preferences.
+func WithSettingsFile(path string) TelegramOptionFunc {
+	return func(t *TelegramOutput) { t.settingsFile = path }
+}
+
+// WithOperatorUserIDs allows the listed Telegram users to change group preferences.
+func WithOperatorUserIDs(ids ...int64) TelegramOptionFunc {
+	return func(t *TelegramOutput) {
+		t.operatorIDs = make(map[int64]struct{}, len(ids))
+		for _, id := range ids {
+			t.operatorIDs[id] = struct{}{}
+		}
 	}
 }
 
