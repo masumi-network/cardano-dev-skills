@@ -55,6 +55,10 @@ The TxSubmission protocol propagates transactions between nodes. It uses a pull-
 | **Txs** | 5 | Client | Client must provide transaction bodies |
 | **Done** | 6 | None | Terminal state |
 
+### Pipelining
+
+A server may pipeline `RequestTxIds` (non-blocking) and `RequestTxs` behind a request the client has not answered yet, so the client can receive them while in `TxIdsNonblocking` or `Txs`. The client queues each one until the protocol returns to `Idle`, then processes it. A blocking `RequestTxIds` is never pipelined.
+
 ## Messages
 
 | Message | Type ID | Direction | Description |
@@ -110,10 +114,18 @@ The TxSubmission protocol propagates transactions between nodes. It uses a pull-
 
 | Limit | Value | Description |
 |-------|-------|-------------|
-| Max Request Count | 65535 | Max transactions per request (uint16) |
-| Max Ack Count | 65535 | Max transaction acknowledgments (uint16) |
-| `DefaultRequestLimit` | 1000 | Exported guidance constant; not applied automatically |
+| `MaxUnackedTxIds` | 10 | Outstanding transaction IDs; bounds every request |
+| `MaxPendingMessageBytes` | 721424 | Pending message bytes in every state |
+| `MaxRequestCount` | 65535 | Range of the `MsgRequestTxIds` request field (uint16) |
+| `MaxAckCount` | 65535 | Range of the `MsgRequestTxIds` ack field (uint16) |
+| `DefaultRequestLimit` | 1000 | Exported guidance constant; exceeds `MaxUnackedTxIds`, so a request of this size is refused |
 | `DefaultAckLimit` | 1000 | Exported guidance constant; not applied automatically |
+
+A request for transaction IDs or bodies is refused with
+`ErrProtocolViolationRequestExceeded` when `unacknowledged - ack + req` exceeds
+`MaxUnackedTxIds`, matching `ProtocolErrorRequestedTooManyTxids` in the
+reference implementation. An acknowledgement larger than what is outstanding is
+refused the same way (`ProtocolErrorAckedTooManyTxids`).
 
 ## Request Parameters
 
@@ -128,10 +140,15 @@ The `RequestTxIds` message includes:
 txsubmission.NewConfig(
     txsubmission.WithRequestTxIdsFunc(requestTxIdsCallback),
     txsubmission.WithRequestTxsFunc(requestTxsCallback),
-    txsubmission.WithInitFunc(initCallback),
-    txsubmission.WithDoneFunc(doneCallback),
+    txsubmission.WithOnInit(onInit), // optional, server side
+    txsubmission.WithOnDone(onDone), // optional, server side
 )
 ```
+
+`OnInit` and `OnDone` receive the connection ID when the client sends `Init`
+or `Done`. A server accepts `Init` without either of them. `WithInitFunc` and
+`WithDoneFunc` are deprecated; they still run after the matching notification,
+and an error they return still fails the protocol.
 
 ## Usage Example
 

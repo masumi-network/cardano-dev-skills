@@ -22,6 +22,46 @@ import (
 
 const LeiosBlsSignatureSize = 48
 
+// MaxLeiosCommitteeSize is the largest Leios committee a signer bitfield can
+// address. cardano-ledger derives its decode-time ceiling from the same value
+// (Cardano.Ledger.Binary.Decoding.DecCBOR.maxLeiosCertSignersBytes), which the
+// generated Dijkstra CDDL emits as `signers : bytes .size (0 .. 8192)` with the
+// comment "bitfield with up to 65536 entries".
+const MaxLeiosCommitteeSize = 65536
+
+// MaxLeiosSignerBitfieldSize is the largest signer bitfield, in bytes, that any
+// legal Leios committee can occupy. It bounds the field at decode; the exact
+// length still depends on the committee and is checked by
+// ValidateLeiosSignerBitfield once that size is known.
+const MaxLeiosSignerBitfieldSize = MaxLeiosCommitteeSize / 8
+
+// LeiosSignerBitfieldTooLargeError reports a Leios signer bitfield that is
+// larger than any addressable committee, and so cannot be interpreted.
+type LeiosSignerBitfieldTooLargeError struct {
+	Size int
+	Max  int
+}
+
+func (e *LeiosSignerBitfieldTooLargeError) Error() string {
+	return fmt.Sprintf(
+		"leios signer bitfield of %d bytes exceeds the maximum of %d",
+		e.Size,
+		e.Max,
+	)
+}
+
+// ValidateLeiosSignerBitfieldSize enforces the CDDL bound on a signer bitfield
+// without reference to a committee size.
+func ValidateLeiosSignerBitfieldSize(signers []byte) error {
+	if len(signers) > MaxLeiosSignerBitfieldSize {
+		return &LeiosSignerBitfieldTooLargeError{
+			Size: len(signers),
+			Max:  MaxLeiosSignerBitfieldSize,
+		}
+	}
+	return nil
+}
+
 type LeiosVoteId struct {
 	cbor.StructAsArray
 	SlotNo  uint64
@@ -137,6 +177,9 @@ func (c *LeiosEbCertificate) UnmarshalCBOR(
 			len(tmp.AggregatedSignature),
 		)
 	}
+	if err := ValidateLeiosSignerBitfieldSize(tmp.Signers); err != nil {
+		return err
+	}
 	*c = LeiosEbCertificate(tmp)
 	c.SetCbor(cborData)
 	return nil
@@ -193,6 +236,11 @@ func LeiosSignerBitfieldSize(committeeSize uint64) uint64 {
 	return (committeeSize + 7) / 8
 }
 
+// ValidateLeiosSignerBitfield checks that signers is exactly
+// LeiosSignerBitfieldSize(committeeSize) bytes. Bits at or beyond the committee
+// size are padding and are deliberately not inspected: the reference collects
+// the signer set with only the bit indices below the committee size
+// (Cardano.Crypto.Leios), so a certificate that sets them still verifies.
 func ValidateLeiosSignerBitfield(signers []byte, committeeSize uint64) error {
 	expectedLen := LeiosSignerBitfieldSize(committeeSize)
 	if uint64(len(signers)) != expectedLen {
@@ -201,17 +249,6 @@ func ValidateLeiosSignerBitfield(signers []byte, committeeSize uint64) error {
 			expectedLen,
 			committeeSize,
 			len(signers),
-		)
-	}
-	if committeeSize == 0 || committeeSize%8 == 0 {
-		return nil
-	}
-	unusedBits := uint(8 - committeeSize%8)
-	unusedMask := byte((1 << unusedBits) - 1)
-	if signers[len(signers)-1]&unusedMask != 0 {
-		return fmt.Errorf(
-			"leios signer bitfield has non-zero unused bits for committee size %d",
-			committeeSize,
 		)
 	}
 	return nil

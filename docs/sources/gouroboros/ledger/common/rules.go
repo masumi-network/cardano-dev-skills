@@ -23,17 +23,90 @@ package common
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"math/big"
 	"math/bits"
 	"reflect"
+	"slices"
 	"sort"
+	"sync"
 
 	"github.com/blinklabs-io/gouroboros/cbor"
+	"github.com/blinklabs-io/gouroboros/internal/transactionwire"
 )
 
+const (
+	OutsideForecastTypeAlonzoBabbage uint8 = 18
+	OutsideForecastTypeConway        uint8 = 17
+	OutsideForecastTypeDijkstra      uint8 = 16
+)
+
+// ValidateOutsideForecast checks the top-level transaction and, when present,
+// each Dijkstra sub-transaction against the validation SlotState's forecast.
+func ValidateOutsideForecast(
+	tx Transaction,
+	_ uint64,
+	ls LedgerState,
+	failureType uint8,
+) error {
+	if tx == nil || ls == nil {
+		return nil
+	}
+	if err := validateOutsideForecastLevel(tx, tx.Witnesses(), ls, failureType); err != nil {
+		return err
+	}
+	bodies := SubTransactionBodiesFromTransaction(tx)
+	witnessSets := SubTransactionWitnessSetsFromTransaction(tx)
+	for i, body := range bodies {
+		if i >= len(witnessSets) {
+			return fmt.Errorf("sub-transaction %d has no witness set", i)
+		}
+		if err := validateOutsideForecastLevel(
+			body,
+			witnessSets[i],
+			ls,
+			failureType,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// UtxoValidateCollateralKeyLocked applies the phase-2-gated collateral
+// key-lock predicate.
+func UtxoValidateCollateralKeyLocked(
+	tx Transaction,
+	_ uint64,
+	ls LedgerState,
+	_ ProtocolParameters,
+) error {
+	return ValidateCollateralKeyLocked(tx, ls)
+}
+
+func validateOutsideForecastLevel(
+	body TransactionBody,
+	witnesses TransactionWitnessSet,
+	ls LedgerState,
+	failureType uint8,
+) error {
+	upperBound, present := TransactionValidityIntervalUpperBound(body)
+	if !present || !witnessSetHasRedeemers(witnesses) {
+		return nil
+	}
+	if _, err := ls.SlotToTime(upperBound); err != nil {
+		return &OutsideForecastError{Type: failureType, Slot: upperBound}
+	}
+	return nil
+}
+
 // UtxoValidationRuleFunc represents a function that validates a transaction
-// against a specific UTXO validation rule.
+// against a specific UTXO validation rule. Rules invoked by VerifyTransaction
+// receive a transaction-scoped cached ledger state; use UnwrapLedgerState
+// before asserting optional ledger-state capabilities, or the *For helpers
+// (StakeCredentialDepositStateFor and the rest) for a capability an earlier
+// transaction in the block can change.
 type UtxoValidationRuleFunc func(
 	tx Transaction,
 	slot uint64,
@@ -41,14 +114,301 @@ type UtxoValidationRuleFunc func(
 	protocolParams ProtocolParameters,
 ) error
 
+type cachedUtxoLookup struct {
+	utxo Utxo
+	err  error
+}
+
+// utxoCacheKey is the ledger's own identity for a transaction input: the hash
+// of the transaction that produced the output and the output index. Keying on
+// those components avoids formatting the 32-byte hash on every cache probe.
+type utxoCacheKey struct {
+	id    Blake2b256
+	index uint32
+}
+
+// cachedLedgerState keeps read-only UTxO lookups transaction-scoped. Several
+// validation rules need the same transaction view; sharing these results
+// avoids resolving each input again as the rule list advances.
+//
+// VerifyTransaction substitutes this wrapper for the state the caller passed
+// in, so it must not weaken that state's concurrency guarantees: mu guards the
+// cache for rules that resolve inputs from more than one goroutine. The
+// wrapped lookup runs with mu released, so concurrent misses on the same input
+// can reach the wrapped state twice. The UTxO view is fixed for the duration
+// of validation, so both calls observe the same result.
+type cachedLedgerState struct {
+	LedgerState
+	mu      sync.Mutex
+	lookups map[utxoCacheKey]cachedUtxoLookup
+	// signatures is the caller's pre-verified witness signature result, read
+	// by UtxoValidateSignatures. It is nil for plain VerifyTransaction calls.
+	signatures *PreverifiedSignatures
+	// memo holds values derived from one transaction and this state, which
+	// several rules would otherwise each derive again. See
+	// TransactionScopedMemo.
+	memoMu sync.Mutex
+	memo   []*transactionScopedMemoEntry
+}
+
+// transactionScopedMemoEntry holds tx itself, not its address, so the
+// transaction stays reachable for as long as the memo does and a later
+// allocation can never be mistaken for it. done is closed once value and err
+// are set, so concurrent callers for the same entry wait for one build.
+type transactionScopedMemoEntry struct {
+	key   any
+	tx    Transaction
+	value any
+	err   error
+	done  chan struct{}
+}
+
+// TransactionScopedMemoizer is implemented by the ledger state that
+// validation rules receive while one transaction is validated. Values derived
+// from the transaction and the ledger state can be computed once there and
+// shared by the rules, because neither changes for the duration of that
+// validation.
+type TransactionScopedMemoizer interface {
+	// TransactionScopedMemo returns the value and error build produced for
+	// key and tx, calling build the first time. A transaction is identified
+	// by object, so a distinct transaction value, such as a Dijkstra
+	// sub-transaction, never shares an entry. A transaction that is not a
+	// pointer is never memoized.
+	TransactionScopedMemo(
+		tx Transaction,
+		key any,
+		build func() (any, error),
+	) (any, error)
+}
+
+// NewTransactionScopedLedgerState returns ledgerState wrapped as the
+// transaction-scoped state VerifyTransaction gives its rules: UTxO lookups and
+// TransactionScopedMemo values are shared for as long as it is used. Use one
+// for exactly one transaction validation, during which the ledger state it
+// wraps must not change. A nil state, or one that is already scoped, is
+// returned unchanged.
+func NewTransactionScopedLedgerState(ledgerState LedgerState) LedgerState {
+	return newTransactionScopedLedgerState(ledgerState, nil)
+}
+
+func newTransactionScopedLedgerState(
+	ledgerState LedgerState,
+	signatures *PreverifiedSignatures,
+) LedgerState {
+	if ledgerState == nil ||
+		(reflect.ValueOf(ledgerState).Kind() == reflect.Pointer &&
+			reflect.ValueOf(ledgerState).IsNil()) {
+		return ledgerState
+	}
+	if cached, ok := ledgerState.(*cachedLedgerState); ok &&
+		cached.signatures == signatures {
+		return cached
+	}
+	return &cachedLedgerState{
+		LedgerState: ledgerState,
+		lookups:     make(map[utxoCacheKey]cachedUtxoLookup),
+		signatures:  signatures,
+	}
+}
+
+// IsTransactionScopedLedgerState reports whether ledgerState is the state
+// NewTransactionScopedLedgerState returns. An adapter that merely forwards
+// TransactionScopedMemoizer is not, because it may resolve UTxOs differently
+// from the state it forwards to.
+func IsTransactionScopedLedgerState(ledgerState LedgerState) bool {
+	_, ok := ledgerState.(*cachedLedgerState)
+	return ok
+}
+
+// TransactionScopedMemo implements TransactionScopedMemoizer. build runs
+// with the memo unlocked, so it may itself use the memo under another key.
+// Concurrent callers for one transaction and key share a single build. A key
+// that is not comparable is never memoized.
+func (c *cachedLedgerState) TransactionScopedMemo(
+	tx Transaction,
+	key any,
+	build func() (any, error),
+) (any, error) {
+	txValue := reflect.ValueOf(tx)
+	if tx == nil || txValue.Kind() != reflect.Pointer || txValue.IsNil() ||
+		(key != nil && !reflect.ValueOf(key).Comparable()) {
+		return build()
+	}
+	c.memoMu.Lock()
+	for _, entry := range c.memo {
+		if entry.tx == tx && entry.key == key {
+			c.memoMu.Unlock()
+			<-entry.done
+			return entry.value, entry.err
+		}
+	}
+	entry := &transactionScopedMemoEntry{
+		key: key, tx: tx, done: make(chan struct{}),
+	}
+	c.memo = append(c.memo, entry)
+	c.memoMu.Unlock()
+	defer close(entry.done)
+	entry.value, entry.err = build()
+	return entry.value, entry.err
+}
+
+// UnwrapLedgerState implements LedgerStateUnwrapper, so a package that walks
+// its own adapters one layer at a time can reach the state beneath this one
+// without skipping an adapter that sits between them.
+func (c *cachedLedgerState) UnwrapLedgerState() LedgerState {
+	return c.LedgerState
+}
+
+// LedgerStateUnwrapper exposes the provider beneath a validation-time
+// LedgerState adapter. Optional capabilities must be checked against the
+// provider because adapters may add only one narrow behavior.
+type LedgerStateUnwrapper interface {
+	UnwrapLedgerState() LedgerState
+}
+
+// UnwrapLedgerState returns the caller's ledger state when validation is
+// running with the transaction-scoped UTxO lookup cache. Rules that inspect
+// optional LedgerState capabilities must use this before type assertions; the
+// cache wrapper preserves UTxO lookup behavior but cannot preserve assertions
+// against arbitrary provider types. A state this package did not wrap is
+// returned unchanged.
+func UnwrapLedgerState(ledgerState LedgerState) LedgerState {
+	for ledgerState != nil {
+		if cached, ok := ledgerState.(*cachedLedgerState); ok {
+			ledgerState = cached.LedgerState
+			continue
+		}
+		unwrapper, ok := ledgerState.(LedgerStateUnwrapper)
+		if !ok {
+			return ledgerState
+		}
+		ledgerState = unwrapper.UnwrapLedgerState()
+	}
+	return nil
+}
+
+// ledgerStateCapabilityFor finds the first provider of a narrow state
+// capability without discarding a validation adapter that implements it.
+func ledgerStateCapabilityFor[T any](ledgerState LedgerState) (T, bool) {
+	for ledgerState != nil {
+		if capability, ok := any(ledgerState).(T); ok {
+			return capability, true
+		}
+		if cached, ok := ledgerState.(*cachedLedgerState); ok {
+			ledgerState = cached.LedgerState
+			continue
+		}
+		unwrapper, ok := ledgerState.(LedgerStateUnwrapper)
+		if !ok {
+			break
+		}
+		ledgerState = unwrapper.UnwrapLedgerState()
+	}
+	var zero T
+	return zero, false
+}
+
+// GovPurposeRootsStateFor returns the first governance-purpose root provider
+// in ls's validation adapter chain.
+func GovPurposeRootsStateFor(ls LedgerState) (GovPurposeRootsState, bool) {
+	return ledgerStateCapabilityFor[GovPurposeRootsState](ls)
+}
+
+// EpochStateFor returns the first epoch provider in ls's validation adapter
+// chain.
+func EpochStateFor(ls LedgerState) (EpochState, bool) {
+	return ledgerStateCapabilityFor[EpochState](ls)
+}
+
+// UtxoValidateOutsideForecast requires a transaction's upper validity bound
+// to be convertible when the transaction has redeemers. SlotToTime is
+// supplied by the caller's validation state and carries its forecast
+// anchoring semantics.
+func UtxoValidateOutsideForecast(
+	tx Transaction,
+	_ uint64,
+	ledgerState LedgerState,
+	_ ProtocolParameters,
+) error {
+	if tx == nil || (reflect.ValueOf(tx).Kind() == reflect.Pointer &&
+		reflect.ValueOf(tx).IsNil()) {
+		return nil
+	}
+	upperBound, present := TransactionValidityIntervalUpperBound(tx)
+	if !present {
+		return nil
+	}
+	witnesses := tx.Witnesses()
+	if witnesses == nil {
+		return nil
+	}
+	redeemers := witnesses.Redeemers()
+	if redeemers == nil {
+		return nil
+	}
+	hasRedeemers := false
+	for range redeemers.Iter() {
+		hasRedeemers = true
+		break
+	}
+	if !hasRedeemers {
+		return nil
+	}
+	if ledgerState != nil &&
+		(reflect.ValueOf(ledgerState).Kind() != reflect.Pointer ||
+			!reflect.ValueOf(ledgerState).IsNil()) {
+		if _, err := ledgerState.SlotToTime(upperBound); err == nil {
+			return nil
+		}
+	}
+	return &OutsideForecastError{Type: 18, Slot: upperBound}
+}
+
+func (s *cachedLedgerState) UtxoById(input TransactionInput) (Utxo, error) {
+	key := utxoCacheKey{id: input.Id(), index: input.Index()}
+	s.mu.Lock()
+	result, ok := s.lookups[key]
+	s.mu.Unlock()
+	if ok {
+		return result.utxo, result.err
+	}
+	utxo, err := s.LedgerState.UtxoById(input)
+	s.mu.Lock()
+	s.lookups[key] = cachedUtxoLookup{utxo: utxo, err: err}
+	s.mu.Unlock()
+	return utxo, err
+}
+
 // UtxoValidateCurrentTreasuryValue checks a transaction's optional current
 // treasury value against the ledger state.
 func UtxoValidateCurrentTreasuryValue(
-	tx Transaction, slot uint64, ledgerState LedgerState, protocolParams ProtocolParameters,
+	tx Transaction,
+	slot uint64,
+	ledgerState LedgerState,
+	protocolParams ProtocolParameters,
 ) error {
 	if !tx.IsValid() {
 		return nil
 	}
+	return UtxoValidateCurrentTreasuryValueAnyPhase(
+		tx,
+		slot,
+		ledgerState,
+		protocolParams,
+	)
+}
+
+// UtxoValidateCurrentTreasuryValueAnyPhase performs the same check as
+// UtxoValidateCurrentTreasuryValue without skipping phase-2-invalid
+// transactions. Dijkstra LEDGER and SUBLEDGER validate the treasury value
+// before branching on Phase2Valid, whereas Conway LEDGER validates it only
+// inside that branch.
+func UtxoValidateCurrentTreasuryValueAnyPhase(
+	tx Transaction,
+	_ uint64,
+	ledgerState LedgerState,
+	_ ProtocolParameters,
+) error {
 	bodies := SubTransactionBodiesFromTransaction(tx)
 	values := make([]*big.Int, 0, len(bodies)+1)
 	for _, body := range bodies {
@@ -62,8 +422,11 @@ func UtxoValidateCurrentTreasuryValue(
 	if len(values) == 0 {
 		return nil
 	}
-	if ledgerState == nil || (reflect.ValueOf(ledgerState).Kind() == reflect.Pointer && reflect.ValueOf(ledgerState).IsNil()) {
-		return TreasuryValueQueryError{Err: TreasuryValueProviderUnavailableError{}}
+	if ledgerState == nil ||
+		(reflect.ValueOf(ledgerState).Kind() == reflect.Pointer && reflect.ValueOf(ledgerState).IsNil()) {
+		return TreasuryValueQueryError{
+			Err: TreasuryValueProviderUnavailableError{},
+		}
 	}
 	expected, err := ledgerState.TreasuryValue()
 	if err != nil {
@@ -71,7 +434,29 @@ func UtxoValidateCurrentTreasuryValue(
 	}
 	for _, supplied := range values {
 		if supplied.Cmp(new(big.Int).SetUint64(expected)) != 0 {
-			return CurrentTreasuryValueMismatchError{Supplied: new(big.Int).Set(supplied), Expected: expected}
+			return CurrentTreasuryValueMismatchError{
+				Supplied: new(big.Int).Set(supplied),
+				Expected: expected,
+			}
+		}
+	}
+	return nil
+}
+
+// UtxoValidateProposalReturnAddressShape enforces the wire-level account
+// address shape for proposal return accounts, regardless of phase-2 validity.
+func UtxoValidateProposalReturnAddressShape(
+	tx Transaction,
+	_ uint64,
+	_ LedgerState,
+	_ ProtocolParameters,
+) error {
+	if tx == nil {
+		return nil
+	}
+	for _, proposal := range tx.ProposalProcedures() {
+		if err := CheckAccountAddress(proposal.RewardAccount()); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -140,7 +525,9 @@ func ComposeUtxoValidationRules(
 }
 
 // VerifyTransaction runs the provided validation rules in order and wraps
-// the first error encountered into a ValidationError.
+// the first error encountered into a ValidationError. Each rule receives a
+// transaction-scoped UTxO cache; rules asserting optional ledger-state
+// capabilities must call UnwrapLedgerState first.
 func VerifyTransaction(
 	tx Transaction,
 	slot uint64,
@@ -148,6 +535,31 @@ func VerifyTransaction(
 	protocolParams ProtocolParameters,
 	validationRules []UtxoValidationRuleFunc,
 ) error {
+	return VerifyTransactionWithSignatures(
+		tx,
+		slot,
+		ledgerState,
+		protocolParams,
+		validationRules,
+		nil,
+	)
+}
+
+// VerifyTransactionWithSignatures behaves like VerifyTransaction but lets
+// UtxoValidateSignatures reuse a PreverifySignatures result for tx instead of
+// verifying the vkey and bootstrap signatures again. Witness presence and
+// every other rule still run against ledgerState. A nil result, a result for a
+// different transaction body, or a nil ledgerState leaves signatures to be
+// verified inline.
+func VerifyTransactionWithSignatures(
+	tx Transaction,
+	slot uint64,
+	ledgerState LedgerState,
+	protocolParams ProtocolParameters,
+	validationRules []UtxoValidationRuleFunc,
+	signatures *PreverifiedSignatures,
+) error {
+	ledgerState = newTransactionScopedLedgerState(ledgerState, signatures)
 	for i, rule := range validationRules {
 		if err := rule(tx, slot, ledgerState, protocolParams); err != nil {
 			details := map[string]any{"rule_index": i, "slot": slot}
@@ -165,29 +577,30 @@ func VerifyTransaction(
 	return nil
 }
 
-// txTypeAlonzo is the first era whose historical on-wire CBOR includes the
-// 1-byte IsValid boolean field. The fee-relevant size excludes this byte only
-// when the transaction actually has the 4-component Alonzo-style envelope.
-const txTypeAlonzo = 4
+const (
+	// txTypeAlonzo is the first era whose mempool transaction envelope may
+	// carry the IsValid boolean.
+	txTypeAlonzo = 4
+	// txTypeConway is the last era that uses the Alonzo transaction size
+	// encoding. Dijkstra has its own three-component envelope.
+	txTypeConway = 6
+)
 
 // TxSize returns the size of a transaction as the Cardano ledger spec defines
 // it — the measure used both for fees and for maxTxSize.
 //
-// For Alonzo through Conway the on-wire CBOR is a 4-element array
-// [body, witnesses, isValid, metadata], while the Haskell
-// toCBORForSizeComputation encodes only 3 elements. The IsValid flag is not
-// part of the transaction the chain sized: a block stores bodies, witness
-// sets, IsValid flags and auxiliary data in four parallel arrays, and
-// reconstructing a standalone transaction re-attaches that byte. So the size
-// is the full on-wire length minus 1. Dijkstra block transactions use a
-// 3-element envelope, so no adjustment applies unless an explicitly
-// 4-component transaction is being sized.
+// For Alonzo through Conway the Haskell toCBORForSizeComputation encodes a
+// canonical 3-element array [body, witnesses, metadata]. Mempool transaction
+// CBOR may additionally carry IsValid as a fourth component, and the received
+// outer array may use another valid framing. Neither changes the size used by
+// the ledger: the three retained components keep their received bytes and get
+// a canonical one-byte array header. Dijkstra uses its own three-component
+// envelope.
 //
 // Every rule expressed against a transaction's size must use this, not
-// len(tx.Cbor()). The two differ by exactly one byte, which only matters for a
-// transaction sitting exactly on a limit — rare enough to survive a long way
-// into a replay before a single transaction built to fill maxTxSize exposes
-// it.
+// len(tx.Cbor()). The two can differ when the received envelope carries
+// IsValid or uses non-canonical outer-array framing. That difference matters
+// most for a transaction sitting exactly on a limit.
 //
 // When the transaction has no stored CBOR (e.g. programmatically constructed),
 // the function falls back to encoding the transaction to compute its size.
@@ -200,11 +613,19 @@ func TxSize(tx Transaction) (int, error) {
 		var err error
 		cborData, err = cbor.Encode(tx)
 		if err != nil {
-			return 0, fmt.Errorf("failed to encode transaction for size: %w", err)
+			return 0, fmt.Errorf(
+				"failed to encode transaction for size: %w",
+				err,
+			)
 		}
 	}
 	fullSize := len(cborData)
-	if tx.Type() >= txTypeAlonzo {
+	if tx.Type() >= txTypeAlonzo && tx.Type() <= txTypeConway {
+		if size, ok := alonzoFamilyTransactionSize(cborData); ok {
+			return size, nil
+		}
+	}
+	if tx.Type() > txTypeConway {
 		dec, err := cbor.NewStreamDecoder(cborData)
 		if err == nil {
 			arrayLen, _, _, decodeErr := dec.DecodeArrayHeader()
@@ -214,6 +635,19 @@ func TxSize(tx Transaction) (int, error) {
 		}
 	}
 	return fullSize, nil
+}
+
+func alonzoFamilyTransactionSize(cborData []byte) (int, bool) {
+	envelope, err := transactionwire.DecodeAlonzoFamilyEnvelope(cborData)
+	if err != nil || envelope.WireSize != len(cborData) {
+		return 0, false
+	}
+	_, auxiliaryData, err := envelope.DecodeValidityAndAuxiliaryData()
+	if err != nil {
+		return 0, false
+	}
+	return 1 + len(envelope.Body) + len(envelope.WitnessSet) +
+		len(auxiliaryData), true
 }
 
 // TxSizeForFee returns the fee-relevant size of a transaction. It is the same
@@ -314,9 +748,8 @@ func (e MalformedAuthorizationError) Error() string {
 //   - 5: the genesis root key authorizes delegation; the new delegate and VRF
 //     key are targets, not authors.
 //   - 6: MIR has no field-level author; Shelley's accessor returns Nothing for
-//     it. Its stateful genesis-delegate quorum is implemented by
-//     ValidateMIRGenesisQuorum, which is not yet registered in any era rule
-//     list; Conway expunges MIR.
+//     it. Its stateful genesis-delegate quorum is enforced by
+//     ValidateMIRGenesisQuorum; Conway expunges MIR.
 //
 // This switch deliberately names all 19 certificate forms so typed nils and a
 // future unhandled implementation cannot silently bypass authorization.
@@ -587,7 +1020,11 @@ func ValidateRequiredVKeyWitnesses(tx Transaction) error {
 // fields, so Shelley through Babbage require signatures from a quorum of the
 // currently delegated genesis keys. A ledger state that cannot answer the
 // query fails closed rather than admitting an unauthorized certificate.
-func ValidateMIRGenesisQuorum(tx Transaction, ls LedgerState) error {
+func ValidateMIRGenesisQuorum(
+	tx Transaction,
+	slot uint64,
+	ls LedgerState,
+) error {
 	hasMIR := false
 	for _, cert := range tx.Certificates() {
 		if _, ok := cert.(*MoveInstantaneousRewardsCertificate); ok {
@@ -598,11 +1035,11 @@ func ValidateMIRGenesisQuorum(tx Transaction, ls LedgerState) error {
 	if !hasMIR {
 		return nil
 	}
-	genesisState, ok := ls.(GenesisDelegationState)
+	genesisState, ok := UnwrapLedgerState(ls).(GenesisDelegationState)
 	if !ok {
 		return GenesisDelegationStateUnavailableError{}
 	}
-	delegates, err := genesisState.GenesisDelegateKeyHashes()
+	delegates, err := genesisState.GenesisDelegateKeyHashes(slot)
 	if err != nil {
 		return err
 	}
@@ -634,6 +1071,125 @@ func ValidateMIRGenesisQuorum(tx Transaction, ls LedgerState) error {
 	return nil
 }
 
+// ValidateClassicProtocolParameterUpdates enforces Shelley-family PPUP
+// authorization, voting-window, and protocol-version-dependent update rules.
+func ValidateClassicProtocolParameterUpdates(
+	tx Transaction,
+	slot uint64,
+	ls LedgerState,
+	pp ProtocolParameters,
+) error {
+	targetEpoch, updates := tx.ProtocolParameterUpdates()
+	if len(updates) == 0 {
+		return nil
+	}
+	genesisState, ok := UnwrapLedgerState(ls).(GenesisDelegationState)
+	if !ok {
+		return GenesisDelegationStateUnavailableError{}
+	}
+	windowState, ok := UnwrapLedgerState(ls).(ClassicProtocolParameterUpdateWindowState)
+	if !ok {
+		return ClassicProtocolParameterUpdateWindowStateUnavailableError{}
+	}
+	delegateSet := make(map[Blake2b224]Blake2b224, len(updates))
+	for genesisKey := range updates {
+		delegateKey, ok, err := genesisState.GenesisDelegateForGenesisKey(
+			genesisKey,
+			slot,
+		)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return ProtocolParameterUpdateDelegateError{Delegate: genesisKey}
+		}
+		delegateSet[genesisKey] = delegateKey
+	}
+	signedDelegates := make(map[Blake2b224]struct{})
+	if w := tx.Witnesses(); w != nil {
+		for _, witness := range w.Vkey() {
+			signedDelegates[Blake2b224Hash(witness.Vkey)] = struct{}{}
+		}
+	}
+	for genesisKey := range updates {
+		delegateKey := delegateSet[genesisKey]
+		if _, ok := signedDelegates[delegateKey]; !ok {
+			return ProtocolParameterUpdateWitnessError{Delegate: genesisKey}
+		}
+	}
+	currentEpoch, slotOfNoReturn, err := windowState.ProtocolParameterUpdateWindow(
+		slot,
+	)
+	if err != nil {
+		return err
+	}
+	expectedEpoch := currentEpoch
+	forNextEpoch := slot >= slotOfNoReturn
+	if forNextEpoch {
+		if currentEpoch == ^uint64(0) {
+			return errors.New("current epoch overflows next-epoch calculation")
+		}
+		expectedEpoch++
+	}
+	if targetEpoch != expectedEpoch {
+		return ProtocolParameterUpdateEpochError{
+			Current:      currentEpoch,
+			Expected:     expectedEpoch,
+			Proposed:     targetEpoch,
+			ForNextEpoch: forNextEpoch,
+		}
+	}
+	currentVersion, hasCurrentVersion := ProtocolParametersProtocolVersion{}, false
+	if provider, ok := pp.(ProtocolParametersProtocolVersionProvider); ok {
+		currentVersion = provider.ProtocolParametersProtocolVersion()
+		hasCurrentVersion = true
+	}
+	for _, update := range updates {
+		if versionUpdate, ok := update.(ProtocolParameterVersionUpdateProvider); ok {
+			proposed := versionUpdate.ProtocolParameterVersionUpdate()
+			if proposed != nil {
+				if !hasCurrentVersion {
+					return ProtocolParameterUpdateProtocolVersionUnavailableError{}
+				}
+				if !protocolVersionCanFollow(currentVersion, *proposed) {
+					return ProtocolParameterUpdateVersionError{
+						CurrentMajor:  currentVersion.Major,
+						CurrentMinor:  currentVersion.Minor,
+						ProposedMajor: proposed.Major,
+						ProposedMinor: proposed.Minor,
+					}
+				}
+			}
+		}
+		versioned, ok := update.(ProtocolParameterUpdateVersionValidator)
+		if !ok {
+			continue
+		}
+		if costModels, ok := update.(ProtocolParameterUpdateCostModelProvider); ok &&
+			len(costModels.ProtocolParameterUpdateCostModels()) == 0 {
+			continue
+		}
+		if !hasCurrentVersion {
+			return ProtocolParameterUpdateProtocolVersionUnavailableError{}
+		}
+		if err := versioned.ValidateProtocolParameterUpdateVersion(currentVersion); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func protocolVersionCanFollow(
+	current ProtocolParametersProtocolVersion,
+	proposed ProtocolParametersProtocolVersion,
+) bool {
+	majorIncrement := current.Major < ^uint(0) &&
+		proposed.Major == current.Major+1 && proposed.Minor == 0
+	minorIncrement := proposed.Major == current.Major &&
+		current.Minor < ^uint(0) && proposed.Minor == current.Minor+1
+	return majorIncrement || minorIncrement
+}
+
 // ValidateUnsupportedPlutusExecution fails closed when a transaction requires
 // phase-2 Plutus execution in an era that does not implement it.
 func ValidateUnsupportedPlutusExecution(tx Transaction, era string) error {
@@ -650,16 +1206,38 @@ func ValidateUnsupportedPlutusExecution(tx Transaction, era string) error {
 	return nil
 }
 
+// ValidatePlutusScriptResult checks execution against the transaction's
+// phase-2 validity declaration.
+func ValidatePlutusScriptResult(tx Transaction, err error) error {
+	if tx == nil {
+		return err
+	}
+	if tx.IsValid() {
+		return err
+	}
+	var scriptFailure PlutusScriptFailedError
+	if errors.As(err, &scriptFailure) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return UnexpectedPlutusScriptSuccessError{}
+}
+
 type scriptRequirement struct {
 	hash     ScriptHash
 	redeemer RedeemerKey
 }
 
 type transactionScriptRequirements struct {
-	required    map[ScriptHash]struct{}
-	purposes    []scriptRequirement
-	explicit    map[ScriptHash]Script
-	available   map[ScriptHash]Script
+	required  map[ScriptHash]struct{}
+	purposes  []scriptRequirement
+	explicit  map[ScriptHash]Script
+	available map[ScriptHash]Script
+	// reference holds the hashes of scripts supplied by a reference script on
+	// a spent or reference input.
+	reference   map[ScriptHash]struct{}
 	nativeOrder []ScriptHash
 }
 
@@ -766,15 +1344,14 @@ func collectTransactionScriptRequirements(
 		required:  make(map[ScriptHash]struct{}),
 		explicit:  make(map[ScriptHash]Script),
 		available: make(map[ScriptHash]Script),
+		reference: make(map[ScriptHash]struct{}),
 	}
 	addRequirement := func(hash ScriptHash, tag RedeemerTag, index int) {
 		ret.required[hash] = struct{}{}
+		//nolint:gosec // transaction collections are bounded
 		ret.purposes = append(ret.purposes, scriptRequirement{
-			hash: hash,
-			redeemer: RedeemerKey{
-				Tag:   tag,
-				Index: uint32(index), // #nosec G115 -- transaction collections are bounded
-			},
+			hash:     hash,
+			redeemer: RedeemerKey{Tag: tag, Index: uint32(index)},
 		})
 	}
 	addWitnessSet := func(wits TransactionWitnessSet) error {
@@ -823,7 +1400,7 @@ func collectTransactionScriptRequirements(
 		return ret, err
 	}
 
-	resolvedInputs := make(map[string]Utxo, len(tx.Inputs()))
+	resolvedInputs := make(map[transactionInputKey]Utxo, len(tx.Inputs()))
 	if ls != nil {
 		for _, input := range tx.Inputs() {
 			utxo, err := ls.UtxoById(input)
@@ -832,28 +1409,35 @@ func collectTransactionScriptRequirements(
 				// evaluation. Preserve that error precedence here.
 				continue
 			}
-			resolvedInputs[input.String()] = utxo
+			resolvedInputs[newTransactionInputKey(input)] = utxo
 			if utxo.Output != nil && utxo.Output.ScriptRef() != nil {
-				if _, err := addAvailableScript(
+				hash, err := addAvailableScript(
 					ret.available,
 					utxo.Output.ScriptRef(),
-				); err != nil {
+				)
+				if err != nil {
 					return ret, err
 				}
+				ret.reference[hash] = struct{}{}
 			}
 		}
 		for _, input := range tx.ReferenceInputs() {
 			utxo, err := ls.UtxoById(input)
 			if err != nil {
-				return ret, ReferenceInputResolutionError{Input: input, Err: err}
+				return ret, ReferenceInputResolutionError{
+					Input: input,
+					Err:   err,
+				}
 			}
 			if utxo.Output != nil && utxo.Output.ScriptRef() != nil {
-				if _, err := addAvailableScript(
+				hash, err := addAvailableScript(
 					ret.available,
 					utxo.Output.ScriptRef(),
-				); err != nil {
+				)
+				if err != nil {
 					return ret, err
 				}
+				ret.reference[hash] = struct{}{}
 			}
 		}
 	}
@@ -866,7 +1450,7 @@ func collectTransactionScriptRequirements(
 		return inputs[i].Index() < inputs[j].Index()
 	})
 	for index, input := range inputs {
-		utxo, ok := resolvedInputs[input.String()]
+		utxo, ok := resolvedInputs[newTransactionInputKey(input)]
 		if !ok || utxo.Output == nil {
 			continue
 		}
@@ -999,11 +1583,15 @@ func collectTransactionScriptRequirements(
 
 	for index, proposal := range tx.ProposalProcedures() {
 		if proposal == nil {
-			return ret, MalformedAuthorizationError{Subject: "nil proposal procedure"}
+			return ret, MalformedAuthorizationError{
+				Subject: "nil proposal procedure",
+			}
 		}
 		govAction := proposal.GovAction()
 		if govAction == nil {
-			return ret, MalformedAuthorizationError{Subject: "nil governance action"}
+			return ret, MalformedAuthorizationError{
+				Subject: "nil governance action",
+			}
 		}
 		if actionWithPolicy, ok := govAction.(GovActionWithPolicy); ok {
 			policyHash := actionWithPolicy.GetPolicyHash()
@@ -1084,8 +1672,13 @@ func ValidateScriptWitnesses(tx Transaction, ls LedgerState) error {
 		}
 	}
 	for provided := range requirements.explicit {
-		if _, ok := requirements.required[provided]; !ok {
-			// A witness-set script with no script purpose is extraneous. See
+		_, needed := requirements.required[provided]
+		_, byReference := requirements.reference[provided]
+		if !needed || byReference {
+			// A witness-set script with no script purpose is extraneous, as
+			// is one a reference script already supplies: the reference
+			// removes those from the needed set before comparing (extra =
+			// sReceived minus (sNeeded minus sRefs)). See
 			// validateMissingScripts in
 			// eras/shelley/impl/src/Cardano/Ledger/Shelley/Rules/Utxow.hs and
 			// babbageMissingScripts in
@@ -1120,6 +1713,253 @@ func ValidateScriptWitnesses(tx Transaction, ls LedgerState) error {
 		if _, isNative := available.(NativeScript); isNative && hasRedeemer {
 			return ExtraneousRedeemerError{RedeemerKey: purpose.redeemer}
 		}
+	}
+	return nil
+}
+
+// UsedPlutusVersions returns the languages of Plutus scripts needed by a
+// transaction's script purposes. Unused witness and reference scripts do not
+// require cost models.
+func UsedPlutusVersions(
+	tx Transaction,
+	ls LedgerState,
+) (map[uint]struct{}, error) {
+	requirements, err := collectTransactionScriptRequirements(tx, ls)
+	if err != nil {
+		return nil, err
+	}
+	used := make(map[uint]struct{})
+	for _, purpose := range requirements.purposes {
+		if script, ok := requirements.available[purpose.hash]; ok {
+			if version, isPlutus := PlutusScriptVersion(script); isPlutus {
+				used[version] = struct{}{}
+			}
+		}
+	}
+	return used, nil
+}
+
+// ValidateExactExtraneousRedeemers rejects every supplied redeemer that does
+// not point to a needed Plutus script purpose. Missing redeemers are reported
+// by ValidateScriptWitnesses earlier in UTXOW rule order.
+func ValidateExactExtraneousRedeemers(
+	tx Transaction,
+	ls LedgerState,
+) error {
+	witnesses := tx.Witnesses()
+	if witnesses == nil || witnesses.Redeemers() == nil {
+		return nil
+	}
+	requirements, err := collectTransactionScriptRequirements(tx, ls)
+	if err != nil {
+		// Other UTXOW rules own malformed withdrawals and unresolved regular
+		// inputs. Preserve the bounds-only result when this helper cannot
+		// derive purposes because of such an earlier error.
+		return ValidateExtraneousRedeemers(tx)
+	}
+	needed := make(map[RedeemerKey]struct{}, len(requirements.purposes))
+	for _, purpose := range requirements.purposes {
+		if script, ok := requirements.available[purpose.hash]; ok {
+			if _, isPlutus := PlutusScriptVersion(script); isPlutus {
+				needed[purpose.redeemer] = struct{}{}
+			}
+		}
+	}
+	for provided := range witnesses.Redeemers().Iter() {
+		if _, ok := needed[provided]; !ok {
+			return ExtraneousRedeemerError{RedeemerKey: provided}
+		}
+	}
+	return nil
+}
+
+// ValidateRequiredSpendingDatums checks datum-hash spending inputs locked by
+// Plutus scripts. These datums are required by UTXOW regardless of the
+// transaction's phase-2 validity flag.
+func ValidateRequiredSpendingDatums(tx Transaction, ls LedgerState) error {
+	if ls == nil {
+		return nil
+	}
+	requirements, err := collectTransactionScriptRequirements(tx, ls)
+	if err != nil {
+		return err
+	}
+	return ValidateRequiredSpendingDatumsWithAvailableScripts(
+		tx,
+		ls,
+		requirements.available,
+	)
+}
+
+// ValidateRequiredSpendingDatumsWithAvailableScripts checks datum-hash
+// spending inputs against a caller-provided script set. It is used when an era
+// makes scripts available across transaction levels while datum witnesses stay
+// local to one level.
+func ValidateRequiredSpendingDatumsWithAvailableScripts(
+	tx Transaction,
+	ls LedgerState,
+	available map[ScriptHash]Script,
+) error {
+	if ls == nil {
+		return nil
+	}
+	witnessDatums := make(map[Blake2b256]struct{})
+	if witnesses := tx.Witnesses(); witnesses != nil {
+		for _, datum := range witnesses.PlutusData() {
+			witnessDatums[datum.Hash()] = struct{}{}
+		}
+	}
+	for _, input := range tx.Inputs() {
+		utxo, err := ResolveInputUtxo(ls, input)
+		if err != nil || utxo.Output == nil {
+			continue
+		}
+		address := utxo.Output.Address()
+		if address.Type()&AddressTypeScriptBit == 0 {
+			continue
+		}
+		scriptHash := ScriptHash(address.PaymentKeyHash())
+		plutusScript, found := available[scriptHash]
+		if !found {
+			continue
+		}
+		version, isPlutus := PlutusScriptVersion(plutusScript)
+		if !isPlutus {
+			continue
+		}
+		if utxo.Output.Datum() != nil {
+			continue
+		}
+		datumHash := utxo.Output.DatumHash()
+		if datumHash == nil {
+			if version > 1 {
+				continue
+			}
+			return MissingDatumForSpendingScriptError{
+				ScriptHash: scriptHash,
+				Input:      input,
+			}
+		}
+		if _, found := witnessDatums[*datumHash]; !found {
+			return MissingDatumForSpendingScriptError{
+				ScriptHash: scriptHash,
+				Input:      input,
+			}
+		}
+	}
+	return nil
+}
+
+// ValidateSupplementalDatums checks that witness datums are justified by a
+// Plutus spending input, datum-hash output, reference input, or collateral
+// return.
+func ValidateSupplementalDatums(tx Transaction, ls LedgerState) error {
+	witnesses := tx.Witnesses()
+	if witnesses == nil || len(witnesses.PlutusData()) == 0 {
+		return nil
+	}
+	requirements, err := collectTransactionScriptRequirements(tx, ls)
+	if err != nil {
+		return err
+	}
+	return ValidateSupplementalDatumsWithAvailableScripts(
+		tx,
+		ls,
+		requirements.available,
+	)
+}
+
+// ValidateSupplementalDatumsWithAvailableScripts checks witness datums
+// against a caller-provided script set. Datum hashes and witnesses remain
+// scoped to tx.
+func ValidateSupplementalDatumsWithAvailableScripts(
+	tx Transaction,
+	ls LedgerState,
+	available map[ScriptHash]Script,
+) error {
+	return ValidateSupplementalDatumsWithExtraBodies(tx, ls, available, nil)
+}
+
+// ValidateSupplementalDatumsWithExtraBodies checks tx's witness datums like
+// ValidateSupplementalDatumsWithAvailableScripts, and also accepts the datum
+// hashes of every extra body's outputs, collateral return and resolved
+// reference inputs. This is the Babbage supplemental set of each extra body,
+// which cardano-ledger's getDijkstraSupplementalDataHashes adds for the
+// sub-transactions of a top-level transaction. Spending inputs of extra
+// bodies do not justify a datum.
+func ValidateSupplementalDatumsWithExtraBodies(
+	tx Transaction,
+	ls LedgerState,
+	available map[ScriptHash]Script,
+	extra []Transaction,
+) error {
+	witnesses := tx.Witnesses()
+	if witnesses == nil || len(witnesses.PlutusData()) == 0 {
+		return nil
+	}
+	justified := make(map[Blake2b256]struct{})
+	addDatumHash := func(output TransactionOutput) {
+		if output == nil || output.Datum() != nil {
+			return
+		}
+		if hash := output.DatumHash(); hash != nil {
+			justified[*hash] = struct{}{}
+		}
+	}
+	for _, input := range tx.Inputs() {
+		if ls == nil {
+			break
+		}
+		utxo, err := ResolveInputUtxo(ls, input)
+		if err != nil || utxo.Output == nil {
+			continue
+		}
+		address := utxo.Output.Address()
+		if address.Type()&AddressTypeScriptBit == 0 {
+			continue
+		}
+		scriptHash := ScriptHash(address.PaymentKeyHash())
+		if plutusScript, found := available[scriptHash]; found {
+			if _, isPlutus := PlutusScriptVersion(plutusScript); isPlutus {
+				addDatumHash(utxo.Output)
+			}
+		}
+	}
+	addBabbageSupplementalHashes := func(body Transaction) {
+		for _, output := range body.Outputs() {
+			addDatumHash(output)
+		}
+		for _, input := range body.ReferenceInputs() {
+			if ls == nil {
+				break
+			}
+			utxo, err := ResolveInputUtxo(ls, input)
+			if err != nil || utxo.Output == nil {
+				continue
+			}
+			addDatumHash(utxo.Output)
+		}
+		addDatumHash(body.CollateralReturn())
+	}
+	addBabbageSupplementalHashes(tx)
+	for _, body := range extra {
+		if body != nil {
+			addBabbageSupplementalHashes(body)
+		}
+	}
+
+	var supplemental []Blake2b256
+	for _, datum := range witnesses.PlutusData() {
+		hash := datum.Hash()
+		if _, found := justified[hash]; !found {
+			supplemental = append(supplemental, hash)
+		}
+	}
+	if len(supplemental) != 0 {
+		sort.Slice(supplemental, func(i, j int) bool {
+			return bytes.Compare(supplemental[i][:], supplemental[j][:]) < 0
+		})
+		return NotAllowedSupplementalDatumsError{DatumHashes: supplemental}
 	}
 	return nil
 }
@@ -1341,32 +2181,18 @@ func EncodeLangViews(
 		case 0: // PlutusV1
 			// Tag is double-serialized: serialize(serialize(0)) => 0x4100.
 			tag = []byte{0x41, 0x00}
-			// Cost model uses indefinite-length list, wrapped in a bytestring
-			// This is the "double bagging" for PlutusV1 compatibility
-			indefList := make(cbor.IndefLengthList, len(costModel))
-			for i, v := range costModel {
-				indefList[i] = any(v)
-			}
-			indefBytes, indefErr := cbor.Encode(indefList)
-			if indefErr != nil {
-				return nil, indefErr
-			}
-			// Wrap the indefinite list bytes in a CBOR bytestring
-			params, err = cbor.Encode(indefBytes)
-			if err != nil {
-				return nil, err
-			}
-
 		case 1, 2, 3: // PlutusV2, PlutusV3, PlutusV4
 			// Tags are single-byte CBOR encodings for small unsigned ints.
 			tag = []byte{byte(version)}
-			// Cost model uses definite-length list (no bytestring wrapper)
-			params, err = cbor.Encode(costModel)
-			if err != nil {
-				return nil, err
-			}
 		default:
-			return nil, fmt.Errorf("unsupported Plutus version for lang views: %d", version)
+			return nil, fmt.Errorf(
+				"unsupported Plutus version for lang views: %d",
+				version,
+			)
+		}
+		params, err = langViewParams(version, costModel)
+		if err != nil {
+			return nil, err
 		}
 
 		views = append(views, langView{tag: tag, params: params})
@@ -1386,7 +2212,8 @@ func EncodeLangViews(
 	result := make([]byte, 0, totalSize)
 	// Encode map length (definite-length map)
 	if len(views) < 24 {
-		result = append(result, 0xa0+byte(len(views))) //nolint:gosec // len < 24
+		//nolint:gosec // len < 24
+		result = append(result, 0xa0+byte(len(views)))
 	} else {
 		result = append(result, 0xb8, byte(len(views))) //nolint:gosec // len < 256
 	}
@@ -1398,6 +2225,80 @@ func EncodeLangViews(
 	}
 
 	return result, nil
+}
+
+// langViewParamsMemoMax bounds langViewParamsMemo. A chain has a handful of
+// distinct cost models in force at once, so this is never reached in practice;
+// a full memo is emptied rather than evicted from.
+const langViewParamsMemoMax = 16
+
+type langViewParamsEntry struct {
+	version   uint
+	costModel []int64
+	params    []byte
+}
+
+// langViewParamsMemo holds encoded language-view parameters by content. Every
+// script data hash check encodes the cost models of the languages its
+// transaction uses, and the cost models change only with the protocol
+// parameters, so the encoding is almost always one already made.
+var langViewParamsMemo struct {
+	sync.Mutex
+	entries []langViewParamsEntry
+}
+
+// langViewParams returns the encoded language-view parameters of costModel for
+// version: for PlutusV1 an indefinite-length list wrapped in a byte string
+// ("double bagging"), for later versions a definite-length list. The result is
+// shared and must not be modified.
+func langViewParams(version uint, costModel []int64) ([]byte, error) {
+	langViewParamsMemo.Lock()
+	for _, entry := range langViewParamsMemo.entries {
+		// CBOR encodes a nil slice as null and an empty one as an empty
+		// array, so nil-ness is part of the key.
+		if entry.version == version &&
+			(entry.costModel == nil) == (costModel == nil) &&
+			slices.Equal(entry.costModel, costModel) {
+			langViewParamsMemo.Unlock()
+			return entry.params, nil
+		}
+	}
+	langViewParamsMemo.Unlock()
+
+	var params []byte
+	if version == 0 {
+		indefList := make(cbor.IndefLengthList, len(costModel))
+		for i, v := range costModel {
+			indefList[i] = any(v)
+		}
+		indefBytes, err := cbor.Encode(indefList)
+		if err != nil {
+			return nil, err
+		}
+		params, err = cbor.Encode(indefBytes)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		var err error
+		params, err = cbor.Encode(costModel)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	langViewParamsMemo.Lock()
+	if len(langViewParamsMemo.entries) >= langViewParamsMemoMax {
+		langViewParamsMemo.entries = nil
+	}
+	langViewParamsMemo.entries = append(langViewParamsMemo.entries,
+		langViewParamsEntry{
+			version:   version,
+			costModel: slices.Clone(costModel),
+			params:    params,
+		})
+	langViewParamsMemo.Unlock()
+	return params, nil
 }
 
 // ShortLex compares byte slices by length first, then lexicographically

@@ -16,11 +16,9 @@ package script
 
 import (
 	"bytes"
-	"cmp"
 	"fmt"
 	"math/big"
 	"slices"
-	"strings"
 
 	lcommon "github.com/blinklabs-io/gouroboros/ledger/common"
 	"github.com/blinklabs-io/plutigo/data"
@@ -123,8 +121,9 @@ func (s ScriptPurposeRewarding) ToScriptInfo() ScriptInfo {
 }
 
 type ScriptPurposeCertifying struct {
-	Index       uint32
-	Certificate lcommon.Certificate
+	Index                uint32
+	Certificate          lcommon.Certificate
+	ProtocolVersionMajor uint
 }
 
 func (ScriptPurposeCertifying) isScriptPurpose() {}
@@ -173,7 +172,7 @@ func (s ScriptPurposeCertifying) ToPlutusData() data.PlutusData {
 	return data.NewConstr(
 		3,
 		data.NewInteger(new(big.Int).SetUint64(uint64(s.Index))),
-		certificateToPlutusData(s.Certificate),
+		certificateToPlutusData(s.Certificate, s.ProtocolVersionMajor),
 	)
 }
 
@@ -323,6 +322,7 @@ func scriptPurposeBuilder(
 	votes KeyValuePairs[*lcommon.Voter, KeyValuePairs[*lcommon.GovActionId, lcommon.VotingProcedure]],
 	proposalProcedures []lcommon.ProposalProcedure,
 	witnessDatums map[lcommon.Blake2b256]*lcommon.Datum,
+	protocolVersionMajor uint,
 ) toScriptPurposeFunc {
 	return func(
 		redeemerKey lcommon.RedeemerKey,
@@ -337,19 +337,25 @@ func scriptPurposeBuilder(
 			var resolvedInput lcommon.Utxo
 			resolved := false
 			for _, tmpResolvedInput := range resolvedInputs {
-				if tmpResolvedInput.Id.String() == tmpInput.String() {
+				// ResolvedInput.Equals compares by (TxId, Index) directly
+				// rather than formatting both sides through String(): this
+				// is called once per spend redeemer and scans
+				// resolvedInputs each time.
+				if ResolvedInput(tmpResolvedInput).Equals(tmpInput) {
 					resolvedInput = tmpResolvedInput
 					resolved = true
 					if resolvedInput.Output == nil {
-						return nil, UnmatchedRedeemerError{RedeemerKey: redeemerKey}
+						return nil, UnmatchedRedeemerError{
+							RedeemerKey: redeemerKey,
+						}
 					}
 					if tmpDatum := resolvedInput.Output.Datum(); tmpDatum != nil {
 						// Inline datum - use it directly
-						datum = data.Normalize(tmpDatum.Data)
+						datum = data.NormalizeShared(tmpDatum.Data)
 					} else if datumHash := resolvedInput.Output.DatumHash(); datumHash != nil {
 						// No inline datum - check witness datums by hash
 						if witnessDatum, exists := witnessDatums[*datumHash]; exists && witnessDatum != nil {
-							datum = data.Normalize(witnessDatum.Data)
+							datum = data.NormalizeShared(witnessDatum.Data)
 						}
 					}
 					break
@@ -360,7 +366,7 @@ func scriptPurposeBuilder(
 			}
 			return ScriptPurposeSpending{
 				Input: resolvedInput,
-				Datum: data.Normalize(datum),
+				Datum: datum,
 			}, nil
 		case lcommon.RedeemerTagMint:
 			mintPolicies := mint.Policies()
@@ -379,8 +385,9 @@ func scriptPurposeBuilder(
 				return nil, UnmatchedRedeemerError{RedeemerKey: redeemerKey}
 			}
 			return ScriptPurposeCertifying{
-				Index:       redeemerKey.Index,
-				Certificate: certificates[redeemerKey.Index],
+				Index:                redeemerKey.Index,
+				Certificate:          certificates[redeemerKey.Index],
+				ProtocolVersionMajor: protocolVersionMajor,
 			}, nil
 		case lcommon.RedeemerTagReward:
 			if uint64(redeemerKey.Index) >= uint64(len(withdrawals)) {
@@ -431,6 +438,7 @@ func BuildScriptPurpose(
 	votes lcommon.VotingProcedures,
 	proposalProcedures []lcommon.ProposalProcedure,
 	witnessDatums map[lcommon.Blake2b256]*lcommon.Datum,
+	protocolVersionMajor uint,
 ) (ScriptPurpose, error) {
 	switch redeemerKey.Tag {
 	case lcommon.RedeemerTagSpend:
@@ -448,16 +456,16 @@ func BuildScriptPurpose(
 		var datum data.PlutusData
 		if d := utxo.Output.Datum(); d != nil {
 			// Inline datum - use it directly
-			datum = data.Normalize(d.Data)
+			datum = data.NormalizeShared(d.Data)
 		} else if datumHash := utxo.Output.DatumHash(); datumHash != nil {
 			// No inline datum - check witness datums by hash
 			if witnessDatum, exists := witnessDatums[*datumHash]; exists && witnessDatum != nil {
-				datum = data.Normalize(witnessDatum.Data)
+				datum = data.NormalizeShared(witnessDatum.Data)
 			}
 		}
 		return ScriptPurposeSpending{
 			Input: utxo,
-			Datum: data.Normalize(datum),
+			Datum: datum,
 		}, nil
 	case lcommon.RedeemerTagMint:
 		policies := mint.Policies()
@@ -476,8 +484,9 @@ func BuildScriptPurpose(
 			return nil, UnmatchedRedeemerError{RedeemerKey: redeemerKey}
 		}
 		return ScriptPurposeCertifying{
-			Index:       redeemerKey.Index,
-			Certificate: certificates[redeemerKey.Index],
+			Index:                redeemerKey.Index,
+			Certificate:          certificates[redeemerKey.Index],
+			ProtocolVersionMajor: protocolVersionMajor,
 		}, nil
 	case lcommon.RedeemerTagReward:
 		sortedAddrs := SortWithdrawalAddresses(withdrawals)
@@ -554,31 +563,5 @@ func BuildScriptPurpose(
 func SortWithdrawalAddresses(
 	withdrawals map[*lcommon.Address]*big.Int,
 ) []*lcommon.Address {
-	sorted := make([]*lcommon.Address, 0, len(withdrawals))
-	for addr := range withdrawals {
-		sorted = append(sorted, addr)
-	}
-	slices.SortFunc(sorted, func(a, b *lcommon.Address) int {
-		if a == nil {
-			return -1
-		}
-		if b == nil {
-			return 1
-		}
-		aCred, aErr := a.RewardAccountCredential()
-		bCred, bErr := b.RewardAccountCredential()
-		if aErr != nil || bErr != nil {
-			return strings.Compare(a.String(), b.String())
-		}
-		if c := cmp.Compare(a.NetworkId(), b.NetworkId()); c != 0 {
-			return c
-		}
-		if c := cmp.Compare(aCred.CredType, bCred.CredType); c != 0 {
-			// Credential's numeric order is key before script, while
-			// cardano-ledger's Ord instance places ScriptHashObj first.
-			return -c
-		}
-		return bytes.Compare(aCred.Credential[:], bCred.Credential[:])
-	})
-	return sorted
+	return lcommon.SortRewardAccountAddresses(withdrawals)
 }

@@ -57,6 +57,87 @@ type StreamingBlockDecoder struct {
 	offsets *BlockTransactionOffsets
 }
 
+const (
+	minBlockComponents = 2
+	maxBlockComponents = 5
+)
+
+// decodeBlockArray returns the original encoding of each top-level block
+// component without allowing the CBOR decoder to allocate from an untrusted
+// array length. Supported blocks have two through five components.
+func decodeBlockArray(
+	data []byte,
+	stream *cbor.StreamDecoder,
+) ([]cbor.RawMessage, uint32, error) {
+	componentCount, headerSize, indefinite := cbor.ArrayInfo(data)
+	if componentCount < 0 {
+		return nil, 0, errors.New("invalid block array header")
+	}
+	if !indefinite &&
+		(componentCount < minBlockComponents ||
+			componentCount > maxBlockComponents) {
+		return nil, 0, fmt.Errorf(
+			"invalid block component count %d",
+			componentCount,
+		)
+	}
+	if err := stream.Advance(int(headerSize)); err != nil {
+		return nil, 0, err
+	}
+
+	capacity := componentCount
+	if indefinite {
+		capacity = maxBlockComponents
+	}
+	components := make([]cbor.RawMessage, 0, capacity)
+	for indefinite || len(components) < componentCount {
+		position := stream.Position()
+		if position >= len(data) {
+			return nil, 0, errors.New("unterminated block array")
+		}
+		if indefinite && data[position] == 0xff {
+			if err := stream.Advance(1); err != nil {
+				return nil, 0, err
+			}
+			break
+		}
+		if len(components) == maxBlockComponents {
+			return nil, 0, fmt.Errorf(
+				"invalid block component count: more than %d",
+				maxBlockComponents,
+			)
+		}
+		offset, length, err := stream.Skip()
+		if err != nil {
+			return nil, 0, err
+		}
+		components = append(
+			components,
+			cbor.RawMessage(data[offset:offset+length]),
+		)
+	}
+	if len(components) < minBlockComponents {
+		return nil, 0, fmt.Errorf(
+			"invalid block component count %d",
+			len(components),
+		)
+	}
+	if stream.Position() != len(data) {
+		return nil, 0, errors.New("unexpected trailing CBOR data")
+	}
+	return components, headerSize, nil
+}
+
+func decodeBlockArrayBytes(
+	data []byte,
+) ([]cbor.RawMessage, uint32, error) {
+	stream, err := cbor.NewStreamDecoder(data)
+	if err != nil {
+		return nil, 0, err
+	}
+	return decodeBlockArray(data, stream)
+}
+
 // NewStreamingBlockDecoder creates a decoder for the given block CBOR.
 func NewStreamingBlockDecoder(data []byte) (*StreamingBlockDecoder, error) {
 	stream, err := cbor.NewStreamDecoder(data)
@@ -85,14 +166,10 @@ func NewStreamingBlockDecoder(data []byte) (*StreamingBlockDecoder, error) {
 // Note: The actual Block struct is created by calling the appropriate era-specific
 // decoder on the raw data. This function focuses on offset extraction.
 func (d *StreamingBlockDecoder) DecodeWithOffsets() (*BlockTransactionOffsets, error) {
-	// Decode block as array of RawMessage to get component boundaries
-	var blockArray []cbor.RawMessage
-	blockStart, blockLen, err := d.stream.Decode(&blockArray)
+	blockArray, arrayHeaderSize, err := decodeBlockArray(d.data, d.stream)
 	if err != nil {
 		return nil, fmt.Errorf("decode block array: %w", err)
 	}
-	_ = blockLen // Used for validation if needed
-
 	if len(blockArray) < 3 {
 		// Byron EBB or other minimal block format
 		// Return empty slice instead of nil to prevent nil pointer dereference
@@ -111,12 +188,9 @@ func (d *StreamingBlockDecoder) DecodeWithOffsets() (*BlockTransactionOffsets, e
 		return d.offsets, nil
 	}
 
-	// Shelley+ block layout: [header, tx_bodies[], witnesses[], metadata_map, invalid_txs[]]
-	arrayHeaderSize := cborArrayHeaderSize(len(blockArray))
-
 	// Track positions as we walk through the block
 	// #nosec G115 -- Cardano block components are well under 4GiB
-	pos := uint32(blockStart) + uint32(arrayHeaderSize)
+	pos := arrayHeaderSize
 
 	// Skip header (blockArray[0])
 	// #nosec G115 -- block header <<4GiB
@@ -144,11 +218,19 @@ func (d *StreamingBlockDecoder) DecodeWithOffsets() (*BlockTransactionOffsets, e
 	if _, err := cbor.Decode([]byte(blockArray[1]), &txBodiesRaw); err != nil {
 		return nil, fmt.Errorf("decode transaction bodies: %w", err)
 	}
+	_, bodiesArrayHeader, _ := cborArrayInfo(blockArray[1])
+	if bodiesArrayHeader == 0 {
+		return nil, errors.New("invalid transaction bodies array header")
+	}
 
 	// Parse witness sets
 	var witnessesRaw []cbor.RawMessage
 	if _, err := cbor.Decode([]byte(blockArray[2]), &witnessesRaw); err != nil {
 		return nil, fmt.Errorf("decode witness sets: %w", err)
+	}
+	_, witnessArrayHeader, _ := cborArrayInfo(blockArray[2])
+	if witnessArrayHeader == 0 {
+		return nil, errors.New("invalid witness sets array header")
 	}
 
 	// Validate that transaction bodies and witness sets have matching lengths
@@ -177,7 +259,6 @@ func (d *StreamingBlockDecoder) DecodeWithOffsets() (*BlockTransactionOffsets, e
 	d.offsets.Transactions = make([]TransactionLocation, len(txBodiesRaw))
 
 	// Calculate individual transaction body offsets
-	bodiesArrayHeader := uint32(cborArrayHeaderSize(len(txBodiesRaw)))
 	bodyPos := txBodiesOffset + bodiesArrayHeader
 
 	for i, rawBody := range txBodiesRaw {
@@ -195,7 +276,6 @@ func (d *StreamingBlockDecoder) DecodeWithOffsets() (*BlockTransactionOffsets, e
 	}
 
 	// Calculate individual witness set offsets
-	witnessArrayHeader := uint32(cborArrayHeaderSize(len(witnessesRaw)))
 	witnessPos := witnessesOffset + witnessArrayHeader
 
 	for i, rawWitness := range witnessesRaw {
@@ -291,15 +371,27 @@ func (d *StreamingBlockDecoder) extractOutputOffsets(
 
 			// Calculate the absolute offset of the outputs array
 			// #nosec G115 -- Cardano tx body offsets are well under 4GiB
-			outputsArrayOffset := bodyOffset + uint32(headerSize) + uint32(valueStart)
-			outputsArrayHeader := uint32(cborArrayHeaderSize(len(outputsRaw)))
+			outputsArrayOffset := bodyOffset + uint32(
+				headerSize,
+			) + uint32(
+				valueStart,
+			)
+			_, outputsArrayHeader, _ := cborArrayInfo(
+				bodyData[int(headerSize)+valueStart:],
+			)
+			if outputsArrayHeader == 0 {
+				return
+			}
 
 			// Track position within outputs array
 			outputPos := outputsArrayOffset + outputsArrayHeader
 
 			// Record each output's position
 			if d.offsets.Transactions[txIndex].Outputs == nil {
-				d.offsets.Transactions[txIndex].Outputs = make([]ByteRange, len(outputsRaw))
+				d.offsets.Transactions[txIndex].Outputs = make(
+					[]ByteRange,
+					len(outputsRaw),
+				)
 			}
 
 			for j, rawOutput := range outputsRaw {
@@ -387,7 +479,11 @@ func ExtractOutputCbor(
 
 	txLoc := offsets.Transactions[txIndex]
 	if outputIndex >= len(txLoc.Outputs) {
-		return nil, fmt.Errorf("output index %d out of range for transaction %d", outputIndex, txIndex)
+		return nil, fmt.Errorf(
+			"output index %d out of range for transaction %d",
+			outputIndex,
+			txIndex,
+		)
 	}
 
 	outputRange := txLoc.Outputs[outputIndex]
