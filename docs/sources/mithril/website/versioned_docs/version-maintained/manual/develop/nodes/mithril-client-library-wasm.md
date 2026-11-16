@@ -62,6 +62,12 @@ npm i @mithril-dev/mithril-client-wasm
 
 Below is a basic example of how to use most of the functions exposed by the Mithril client library:
 
+:::warning
+
+Fetching a certificate and computing a message do not certify anything by themselves. Before treating an artifact or a proof as certified, an integration must verify the certificate chain with `verify_certificate_chain` and check that the computed message is signed by the verified certificate with `verify_message_match_certificate`. The `verify_*_proof_then_compute_message` functions verify only the proof itself. The examples below perform all these steps.
+
+:::
+
 ```js
 import initMithrilClient, {
   MithrilClient,
@@ -200,14 +206,24 @@ console.log(
   proof_certificate,
 );
 
-let valid_cardano_transaction_proof =
+let cardano_transaction_proof_message =
   await client.verify_cardano_transaction_proof_then_compute_message(
     proof,
     proof_certificate,
   );
 console.log(
-  "valid_cardano_transaction_proof:",
-  valid_cardano_transaction_proof,
+  "cardano_transaction_proof_message:",
+  cardano_transaction_proof_message,
+);
+
+let valid_cardano_transaction_proof_message =
+  await client.verify_message_match_certificate(
+    cardano_transaction_proof_message,
+    proof_certificate,
+  );
+console.log(
+  "valid_cardano_transaction_proof_message:",
+  valid_cardano_transaction_proof_message,
 );
 ```
 
@@ -275,4 +291,68 @@ console.log(
   "valid_cardano_stake_distribution_message:",
   valid_cardano_stake_distribution_message,
 );
+```
+
+### Certificate chain cache
+
+:::warning
+
+The certificate chain cache is unstable and requires the `unstable` option of the client.
+
+:::
+
+The certificate chain cache stores the certificates of the verified certificate chains in an [IndexedDB](https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API) database, so that the next verifications reuse them, across page loads.
+It is enabled with the following client options:
+
+- `enable_certificate_chain_verification_cache`: enable the certificate chain cache
+- `certificate_chain_verification_cache_duration_in_seconds`: time a verified certificate stays in the cache (one week by default)
+- `certificate_chain_verification_cache_mode`: verification mode of the certificate chain, either:
+  - `EarlyStopVerification` (default): the chain verification stops at the first cached certificate, the cache also saves the cryptographic verifications
+  - `FullVerification`: the cached certificates are cryptographically re-verified, the cache only saves network round-trips.
+
+:::danger
+
+In the `EarlyStopVerification` mode, the cache is part of the trust base of the client: any script running on the same origin as the page can write to the IndexedDB database of the cache.
+Use the `FullVerification` mode when the page cannot be protected against untrusted scripts.
+Read the [certificate chain cache](../../../mithril/advanced/mithril-protocol/certificates.md#the-certificate-chain-cache) section for more details about the security impact of the modes.
+
+:::
+
+:::info
+
+The cache uses a single database per origin, shared by all the aggregators: the certificates are partitioned by genesis verification key, and resetting the cache clears the certificates of all the aggregators.
+It is silently disabled when IndexedDB is not available (e.g., in Node.js): the `is_certificate_verifier_cache_enabled` function returns whether the cache is used.
+
+:::
+
+Here is an example of the code verifying a certificate chain with the certificate chain cache:
+
+```js
+let client = new MithrilClient(aggregator_endpoint, genesis_verification_key, {
+  unstable: true,
+  enable_certificate_chain_verification_cache: true,
+  certificate_chain_verification_cache_duration_in_seconds: 86400,
+  certificate_chain_verification_cache_mode: "EarlyStopVerification",
+});
+console.log(
+  "certificate chain cache enabled:",
+  await client.is_certificate_verifier_cache_enabled(),
+);
+
+broadcast_channel.onmessage = (e) => {
+  let event = e.data;
+  if (event.type == "CertificateFetchedFromCache") {
+    console.log(
+      "A certificate has been fetched from the cache, certificate_hash: " +
+        event.payload.certificate_hash,
+    );
+  }
+};
+
+let certificate = await client.verify_certificate_chain(
+  "YOUR_CERTIFICATE_HASH",
+);
+console.log("verify certificate chain OK:", certificate);
+
+await client.reset_certificate_verifier_cache();
 ```
