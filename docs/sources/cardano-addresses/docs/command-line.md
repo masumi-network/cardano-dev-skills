@@ -496,6 +496,8 @@ cardano-address key hash < addr.xvk | bech32
 </pre>
 
 > :information_source: The hashing is available for both stake and payment verification keys. Hex encoding can be achieved by redirecting to `bech32` tool.
+>
+> :information_source: `key hash` also accepts raw base16 and base58 input (a 32-byte verification key, optionally extended with a 32-byte chain code). As the bech32 human-readable prefix carries the key role, raw input yields a base16-encoded hash.
 
 
 ### How to generate a payment address from an extended payment key (<strong>payment.addr</strong>)
@@ -622,12 +624,14 @@ echo addr_test1vp2fg770ddmqxxduasjsas39l5wwvwa04nj8ud95fde7f7guscp6v | cardano-a
 ```
 <pre>
 \{
-    "stake_reference": "none",
-    "spending_key_hash_bech32": "addr_vkh12j28hnmtwcp3n08vy58vyf0arnnrhtavu3lrfdztw0j0jng3d6v",
     "address_style": "Shelley",
-    "spending_key_hash": "54947bcf6b760319bcec250ec225fd1ce63baface47e34b44b73e4f9",
+    "address_type": 6,
+    "address_type_name": "enterprise",
+    "network_name": "testnet",
     "network_tag": 0,
-    "address_type": 6
+    "spending_key_hash": "54947bcf6b760319bcec250ec225fd1ce63baface47e34b44b73e4f9",
+    "spending_key_hash_bech32": "addr_vkh12j28hnmtwcp3n08vy58vyf0arnnrhtavu3lrfdztw0j0jng3d6v",
+    "stake_reference": "none"
 \}
 </pre>
 
@@ -636,16 +640,102 @@ echo addr_test1qp2fg770ddmqxxduasjsas39l5wwvwa04nj8ud95fde7f70k6tew7wrnx0s4465nx
 ```
 <pre>
 \{
-    "stake_reference": "by value",
-    "stake_key_hash_bech32": "stake_vkh17mf09mecwve7zkh2jve7nkggu4azk5f7cmtk9zz0wzhz5efq2w6",
-    "stake_key_hash": "f6d2f2ef387333e15aea9333e9d908e57a2b513ec6d762884f70ae2a",
-    "spending_key_hash_bech32": "addr_vkh12j28hnmtwcp3n08vy58vyf0arnnrhtavu3lrfdztw0j0jng3d6v",
     "address_style": "Shelley",
-    "spending_key_hash": "54947bcf6b760319bcec250ec225fd1ce63baface47e34b44b73e4f9",
+    "address_type": 0,
+    "address_type_name": "base",
+    "network_name": "testnet",
     "network_tag": 0,
-    "address_type": 0
+    "spending_key_hash": "54947bcf6b760319bcec250ec225fd1ce63baface47e34b44b73e4f9",
+    "spending_key_hash_bech32": "addr_vkh12j28hnmtwcp3n08vy58vyf0arnnrhtavu3lrfdztw0j0jng3d6v",
+    "stake_key_hash": "f6d2f2ef387333e15aea9333e9d908e57a2b513ec6d762884f70ae2a",
+    "stake_key_hash_bech32": "stake_vkh17mf09mecwve7zkh2jve7nkggu4azk5f7cmtk9zz0wzhz5efq2w6",
+    "stake_reference": "by value"
 \}
 </pre>
+
+### How to discover addresses and credentials for an account
+
+The `address discover` command derives a contiguous batch of payment addresses
+(external and internal) plus the account's stake, DRep and committee credentials.
+It reads an extended account key (`acct_xvk` / `acct_xsk`) or an extended root
+key (`root_xsk`) from stdin. When a root key is supplied, the default account
+(index `0H`) is derived automatically.
+
+```console
+cardano-address key child 1852H/1815H/0H < root.xsk | cardano-address key public --with-chain-code > acct.xvk
+```
+<pre>
+acct_xvk1eame4ge0x5yrwpuqs5eyw89kfmjpgfkfh02xzdx6c2k9k2swcr5clf0u634tm82x6nv2j750x3j7938g70ya4k0lv6pr59s7etw2vpqgfmule
+</pre>
+
+```console
+cardano-address address discover --gap 1 --type base --network-tag testnet < acct.xvk
+```
+<pre>
+payment_external	0	addr_test1qz2fxv2umyhttkxyxp8x0dlpdt3k6cwng5pxj3jhsydzer3jcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwq2ytjqp
+payment_internal	0	addr_test1qz4kjk0as0x7ptt54l6cnfyzejqg22cku0qhqx6al4g2xepjcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwq5hxe5g
+stake_credential	0	stake_vkh1xtrj35uxrctye2egew8sqezgzwwg796ql7uw02572gedc78jpfa
+drep_credential	0	drep1y2jmg4g450lced7q9n34rq6d5vjwkm0ugx6h0894u6ur92s9txn3a
+committee_cold_credential	0	cc_cold1ztl0h9vka4ns45kfj7xh3ljwkd46yn9m5znzlfxd6rpdeagw6p59q
+committee_hot_credential	0	cc_hot1qtmd98q0w9jdxasse0m8kyn2nya7kf9qwmgx20cl5p543rcdtr4dz
+</pre>
+
+```console
+cardano-address address discover --gap 10 --type base --network-tag testnet < acct.xvk
+```
+<pre>
+payment_external	0	addr_test1qz2fxv2umyhttkxyxp8x0dlpdt3k6cwng5pxj3jhsydzer3jcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwq2ytjqp
+payment_external	1	addr_test1qz7svwszky8gcmhrfza7a89z9u0dfzd3l7h23sqlc5yml7ejcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwqcqrvr0
+payment_external	2	addr_test1qqzskpaaaltpg55h2fyegc8w2adqufrx9qg4cnhzdcjykmfjcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwqax7a8w
+payment_external	3	addr_test1qzraw59pvh4247hvkjetwggfc2f6yxzretaakpygla4xmdpjcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwqfzseq8
+payment_external	4	addr_test1qzucwtxqxesxm4ncch8he08vlv5d98ethkthx8uqwgqzpgfjcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwqxm376j
+payment_external	5	addr_test1qpy62t8ryk2rh4gku7lffelfaj5awqf58e9exmaj39c90mfjcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwq94gpgw
+payment_external	6	addr_test1qqefdrhl8g3fpqu9tapc7x0yqzhd32g68t2wekpy6uk7t63jcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwqsvk3k7
+payment_external	7	addr_test1qr035mzgl7kw8d8lepg2qwjje4k8vsrqmayrncm5tjasw0ejcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwq4arazg
+payment_external	8	addr_test1qzhaw3tl8ntzsp4ptrkme0xew4pd0740u05kjw8ws2d5vrejcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwqhjxemt
+payment_external	9	addr_test1qp5entk6mykeayh95dd369mjyzg5f2c0ys9gmtknr06spupjcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwqjempj9
+payment_internal	0	addr_test1qz4kjk0as0x7ptt54l6cnfyzejqg22cku0qhqx6al4g2xepjcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwq5hxe5g
+payment_internal	1	addr_test1qpawmm2zyzryms0kmcew65shsty2hswh4z3gqhlupjgl0wejcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwqjp7aj5
+payment_internal	2	addr_test1qryfmlsjmlntutwnyceaxq6xn8nq8vfrn2nw4ckgmvls7dfjcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwqp8r7y7
+payment_internal	3	addr_test1qpmlksjdvcazqygmwa39zqnh4e4qgtqym042j5hhjm7klp3jcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwqdf8zl8
+payment_internal	4	addr_test1qrc63lfjxngz3z9arr5q5l6ud2m2fd7ujywfwezmlqmd7upjcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwqztapg2
+payment_internal	5	addr_test1qqxn0s8jn928mw9jghwp9thstndwm5edy8yzxu4emg80pj3jcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwq27mshg
+payment_internal	6	addr_test1qzvgwl3zq88kcle6z8pwhcz4ygms0nhvjfrzesnpy5v554ejcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwq324xfk
+payment_internal	7	addr_test1qr6xlehs4xm7glugg904n4jlvcay0m4cavnn84z3afqhzzfjcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwqjzg6ty
+payment_internal	8	addr_test1qqcg3hktezdyqk600e2vgnxmm0rx8jq54c5c5du4jepcalfjcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwqtg2ufw
+payment_internal	9	addr_test1qrvwtn8ptl7x2vntycgzaaxyyhx4f0cct2mwetya6836exfjcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwqmh5vul
+stake_credential	0	stake_vkh1xtrj35uxrctye2egew8sqezgzwwg796ql7uw02572gedc78jpfa
+drep_credential	0	drep1y2jmg4g450lced7q9n34rq6d5vjwkm0ugx6h0894u6ur92s9txn3a
+committee_cold_credential	0	cc_cold1ztl0h9vka4ns45kfj7xh3ljwkd46yn9m5znzlfxd6rpdeagw6p59q
+committee_hot_credential	0	cc_hot1qtmd98q0w9jdxasse0m8kyn2nya7kf9qwmgx20cl5p543rcdtr4dz
+</pre>
+
+```console
+cardano-address address discover --from 5 --gap 5 --type base --network-tag testnet < acct.xvk
+```
+<pre>
+payment_external	5	addr_test1qpy62t8ryk2rh4gku7lffelfaj5awqf58e9exmaj39c90mfjcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwq94gpgw
+payment_external	6	addr_test1qqefdrhl8g3fpqu9tapc7x0yqzhd32g68t2wekpy6uk7t63jcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwqsvk3k7
+payment_external	7	addr_test1qr035mzgl7kw8d8lepg2qwjje4k8vsrqmayrncm5tjasw0ejcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwq4arazg
+payment_external	8	addr_test1qzhaw3tl8ntzsp4ptrkme0xew4pd0740u05kjw8ws2d5vrejcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwqhjxemt
+payment_external	9	addr_test1qp5entk6mykeayh95dd369mjyzg5f2c0ys9gmtknr06spupjcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwqjempj9
+payment_internal	5	addr_test1qqxn0s8jn928mw9jghwp9thstndwm5edy8yzxu4emg80pj3jcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwq27mshg
+payment_internal	6	addr_test1qzvgwl3zq88kcle6z8pwhcz4ygms0nhvjfrzesnpy5v554ejcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwq324xfk
+payment_internal	7	addr_test1qr6xlehs4xm7glugg904n4jlvcay0m4cavnn84z3afqhzzfjcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwqjzg6ty
+payment_internal	8	addr_test1qqcg3hktezdyqk600e2vgnxmm0rx8jq54c5c5du4jepcalfjcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwqtg2ufw
+payment_internal	9	addr_test1qrvwtn8ptl7x2vntycgzaaxyyhx4f0cct2mwetya6836exfjcu5d8ps7zex2k2xt3uqxgjqnnj83ws8lhrn648jjxtwqmh5vul
+stake_credential	0	stake_vkh1xtrj35uxrctye2egew8sqezgzwwg796ql7uw02572gedc78jpfa
+drep_credential	0	drep1y2jmg4g450lced7q9n34rq6d5vjwkm0ugx6h0894u6ur92s9txn3a
+committee_cold_credential	0	cc_cold1ztl0h9vka4ns45kfj7xh3ljwkd46yn9m5znzlfxd6rpdeagw6p59q
+committee_hot_credential	0	cc_hot1qtmd98q0w9jdxasse0m8kyn2nya7kf9qwmgx20cl5p543rcdtr4dz
+</pre>
+
+Use `--json` to emit a JSON document instead of tab-separated values. The
+`--from` option changes the soft index where payment derivation starts.
+
+> :information_source: `--gap` controls how many consecutive payment indices are
+> produced for both the external and internal chains. Credentials are always
+> derived once at index 0.
 
 Details about possible address types are following (refer also to [cddl](https://github.com/input-output-hk/cardano-ledger/blob/master/eras/alonzo/test-suite/cddl-files/alonzo.cddl) )
 | address_type | binary prefix  |   Meaning                                                |
@@ -661,6 +751,12 @@ Details about possible address types are following (refer also to [cddl](https:/
 |      8       |  1000          |   byron/icarus                                           |
 |      14      |  1110          |   reward account: keyhash28                              |
 |      15      |  1111          |   reward account: scripthash28                           |
+
+Note: In addition to the numeric `address_type`, the command outputs a
+human-readable `address_type_name` (`base`, `pointer`, `enterprise`, `reward`,
+`byron` or `icarus`) and a `network_name`. `network_name` is `mainnet` or
+`testnet` for Shelley addresses, the well-known network keyword for Byron and
+Icarus addresses, and `null` when the address carries no network tag.
 
 
 
@@ -1326,6 +1422,26 @@ echo drep_xsk1vpdsm49smzmdwhd4kjmm2mdyljjysm746rafjr7r8kgfanj849psw8pfm305g59wng
 \}
 </pre>
 
+`key inspect` also accepts base16 and base58 encoded input, non-extended keys
+(`*_vk` and `*_sk`), key hashes (`*_vkh`, `drep_vkh`, `cc_cold_vkh`,
+`cc_hot_vkh`) and governance credentials (`drep`, `cc_cold`, `cc_hot`, plus
+their CIP-0129 hex form). Key hashes are reported with their `role` and, for
+governance roles, both the CIP-0129 `credential` and the legacy CIP-0105
+`legacy_credential`:
+
+```console
+echo drep_vkh19j5we8gp7rwk76thsev54ns2mkx5wfhavgx405ypga08x6qj5gn | cardano-address key inspect
+```
+<pre>
+\{
+    "credential": "drep1ygk23myaq8cd6mmfw7r9jjkwptwc63exl43q647ss9r4uucr5yq0s",
+    "hash": "2ca8ec9d01f0dd6f697786594ace0add8d4726fd620d57d081475e73",
+    "key_type": "hash",
+    "legacy_credential": "drep_vkh19j5we8gp7rwk76thsev54ns2mkx5wfhavgx405ypga08x6qj5gn",
+    "role": "representative"
+\}
+</pre>
+
 
 ### How to generate script validation, preimage and script hash from script composed of drep (<strong>drep_script</strong>)
 
@@ -1362,6 +1478,21 @@ cardano-address script hash "all [$(cat drep),active_from 5001]"
 ```
 <pre>
 drep_script1608hfeauc3hvfpvdcqwfdhyd2cfm6j42rp62ckqrskazy57w2zt
+</pre>
+
+The script hash (or a governance script credential) can be inspected with
+`script inspect`, which accepts bech32, base16 or base58 input:
+
+```console
+echo drep_script1608hfeauc3hvfpvdcqwfdhyd2cfm6j42rp62ckqrskazy57w2zt | cardano-address script inspect
+```
+<pre>
+\{
+    "credential": "drep1y0fu7a88hnzxa3y93hqpe9ku34tp80224gv8ftzcqwzm5gsp5y9q7",
+    "legacy_credential": "drep_script1608hfeauc3hvfpvdcqwfdhyd2cfm6j42rp62ckqrskazy57w2zt",
+    "role": "representative",
+    "script_hash": "d3cf74e7bcc46ec4858dc01c96dc8d5613bd4aaa1874ac580385ba22"
+\}
 </pre>
 
 ### Correspondence between keys in cardano-addresses and cardano-cli (<strong>key.xsk key.xvk key.vk key.hash</strong>)
@@ -1486,3 +1617,68 @@ cardano-address key public --without-chain-code < key.xsk | cardano-address key 
 <pre>
 0185545935760c5e370d01e6f4fedbb89b7fd79e115f2837cfab9ea8
 </pre>
+
+### Input encodings
+
+Most commands that read data from stdin accept it in **bech32** (the format
+produced by `cardano-address`), **base16** and — whenever the expected length
+is unambiguous — **base58**. Input is detected in the order base16, base58,
+bech32, and bech32 remains the recommended format.
+
+The following commands accept bech32, base16 and base58 input:
+
+- `key hash`
+- `address payment`
+- `address stake`
+- `address bootstrap`
+- `key inspect`
+- `script inspect`
+
+For `key hash`, `address payment`, `address stake` and `address bootstrap`, a
+raw (base16 or base58) value is interpreted according to its length:
+
+- **64 bytes** — an extended verification key, i.e. a 32-byte public key and
+  its 32-byte chain code;
+- **32 bytes** — a non-extended verification key;
+- **28 bytes** — rejected for `key hash`, `address payment` and `address stake`
+  as ambiguous: a raw credential of 28 bytes may equally be a key hash or a
+  script hash, please provide the bech32-encoded form.
+
+Raw input for `key hash` loses the role information carried by the bech32
+human-readable prefix (e.g. `addr_xvk` vs `drep_xvk`), so the resulting hash
+is printed as raw base16 with no bech32 prefix. `address bootstrap` requires a
+64-byte extended public key.
+
+The following commands deliberately keep **bech32-only** input:
+
+- `key public`, `key private`, `key child`, `key walletid` — the
+  human-readable prefix carries the role (and, for private keys, the key type)
+  needed to select the output form;
+- `address delegation`, `address pointer` — for backwards compatibility with
+  existing behaviour, malformed input keeps reporting `Bech32 error:`.
+- `address discover` — the bech32 prefix (`acct_xvk`, `acct_xsk` or `root_xsk`)
+  is required to know which key role was supplied and whether to derive the
+  default account.
+
+`script hash`, `script preimage` and `script validate` take the script as a
+command-line argument, or read it from stdin when the argument is omitted:
+
+```console
+cardano-address script hash < script.txt
+```
+
+When a script is supplied as an argument, the command does not read stdin at
+all.
+
+For example, the following are equivalent:
+
+```console
+cardano-address script hash "all [addr_shared_vkh1zxt0uvrza94h3hv4jpv0ttddgnwkvdgeyq8jf9w30mcs6y8w3nq]"
+echo "all [addr_shared_vkh1zxt0uvrza94h3hv4jpv0ttddgnwkvdgeyq8jf9w30mcs6y8w3nq]" | cardano-address script hash
+```
+
+Both `script hash` and `script validate` exit with a non-zero status when the
+script cannot be processed: `script validate` reports `Not validated: ...` on
+stderr when the script fails validation, and `script hash` reports a
+`NotUniformKeyType` error on stderr when the keys in the script do not have
+the same role.
