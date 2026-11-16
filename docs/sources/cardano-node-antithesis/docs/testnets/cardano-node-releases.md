@@ -1,4 +1,4 @@
-# Cardano Node Master
+# Cardano Node Releases
 
 A mixed-version Cardano testnet for Antithesis fault-injection testing.
 
@@ -6,7 +6,7 @@ A mixed-version Cardano testnet for Antithesis fault-injection testing.
 
 This testnet exercises the node-to-node protocol across multiple cardano-node versions:
 
-- **4 block producers**: p1 (10.5.3), p2 (10.6.2), p3 (10.7.1), p4 (11.0.1) — forge blocks in a ring topology (p1↔p2↔p3↔p4)
+- **4 block producers**: p1 (11.1.3), p2 (10.6.2), p3 (10.7.1), p4 (11.0.1) — forge blocks in a ring topology (p1↔p2↔p3↔p4)
 - **3 relay nodes**: relay1 (10.6.2), relay2 (10.7.1), relay3 (11.0.1) — non-producing nodes connected to all producers
 
 ### Supporting services
@@ -127,7 +127,7 @@ Why this belongs in the production-baseline testnet:
 
 ### Image provenance promotion (September 2026)
 
-The scheduled `cardano_node_master` profile consumes the tx-generator and
+The scheduled `cardano-node-releases` profile consumes the tx-generator and
 tracer-sidecar images built from source revision
 `36756d0efcf73f412df42a352afd7d6b0ac3c33d`, pinned by immutable registry digest.
 Both images record source creation time `2026-09-08T10:52:25Z` and OCI
@@ -195,7 +195,7 @@ Measured pressure in that run:
 ## Network topology
 
 ```
-p1 (10.5.3) ←→ p2 (10.6.2) ←→ p3 (10.7.1) ←→ p4 (11.0.1) ←→ p1
+p1 (11.1.3) ←→ p2 (10.6.2) ←→ p3 (10.7.1) ←→ p4 (11.0.1) ←→ p1
    ↑                ↑               ↑               ↑
 relay1 (10.6.2) ----+---------------+---------------+
 relay2 (10.7.1) ----+---------------+---------------+
@@ -210,6 +210,38 @@ Producers form a ring. Relays connect to all producers.
 - `docker-compose.yaml`: Full topology definition with YAML anchors for producers and relays
 - `relay-topology.json`: Shared topology for relay nodes (connects to all producers)
 - `tracer-config.yaml`: cardano-tracer log forwarding configuration
+
+`ExperimentalHardForksEnabled` and `ExperimentalProtocolsEnabled` are `false`.
+With them on, the 11.x nodes stamp protocol version 12 in block headers, which
+10.7.1 rejects (`HeaderProtVerTooHigh {supplied: Version 12, expected: Version
+11}`), and the version matrix forks. A cross-version testnet cannot run a
+protocol version its oldest member does not support.
+
+## Fast variant
+
+`testnets/cardano-node-releases-fast` is the same cluster with a fast genesis,
+so a run crosses epoch boundaries. With a 24 h epoch, the releases testnet
+never reaches one.
+
+| parameter | releases | releases-fast |
+|---|---|---|
+| `securityParam` (k) | 432 | 200 |
+| `activeSlotsCoeff` (f) | 0.05 | 0.2 |
+| `slotLength` | 1 s | 0.5 s |
+| `epochLength` | 86400 slots (24 h) | 10000 slots (5000 s) |
+
+Both keep `epochLength` at 10k/f, the Praos sizing that fits the stability
+window (3k/f) and the randomness stabilisation window (4k/f) inside one epoch.
+The fast variant pays with a shorter fork tolerance: k blocks are about 500 s
+of producer divergence, so a network split survives at most about 1/5 of an
+epoch. A node never rolls back more than k blocks, so a longer split forks the
+cluster for good. With k = 20 (50 s) Antithesis network faults did that in
+every run, and k = 100 did it in a one-hour run; k = 200 held. The
+tracer-sidecar receives `SECURITY_PARAM: "200"`.
+
+The scheduled `cardano-node.yaml` runs releases at 01:05 UTC and
+releases-fast at 13:05 UTC, 3 h each, so a releases-fast run crosses two epoch
+boundaries.
 
 ## Running locally
 
