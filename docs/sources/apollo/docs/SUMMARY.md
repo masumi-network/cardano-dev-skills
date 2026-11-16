@@ -12,9 +12,12 @@
 * [Chain backends](backends/README.md)
 * [Capabilities](backends/capabilities.md)
 * [Blockfrost](backends/blockfrost.md)
+* [Koios](backends/koios.md)
 * [Ogmios and Kupo](backends/ogmios.md)
+* [Ouroboros (node-to-client)](backends/ouroboros.md)
 * [UTxO RPC](backends/utxorpc.md)
 * [Fixed and cache](backends/fixed_and_cache.md)
+* [Local evaluation](backends/localeval.md)
 
 ## Wallets and signing
 
@@ -29,6 +32,10 @@
 * [Metadata](transaction_building/metadata.md)
 * [Complete, sign, and submit](transaction_building/complete_sign_submit.md)
 
+## Dijkstra
+
+* [Dijkstra transactions](dijkstra/README.md)
+
 ## Coin selection
 
 * [MACS and selectors](coin_selection/README.md)
@@ -40,6 +47,7 @@
 ## Plutus encoder
 
 * [Struct-tag encoding](plutusencoder/README.md)
+* [Plutus blueprint (CIP-57)](blueprint/README.md)
 
 ## Plutus V3
 

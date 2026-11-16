@@ -31,7 +31,7 @@ go test ./...
 Apollo v2 uses these current signatures:
 
 ```go
-builder := apollo.New(chainContext)
+builder := apollo.New(chainContext).SetMaxFee(1_000_000)
 
 builder, err := builder.Complete()
 txCbor, err := builder.GetTxCbor()
@@ -69,7 +69,7 @@ conformance catches future signature changes:
 var _ backend.ChainContext = (*myChainContext)(nil)
 ```
 
-The repository includes Blockfrost, Ogmios/Kupo, UTxO RPC, and a deterministic
+The repository includes Blockfrost, Koios, Ogmios/Kupo, UTxO RPC, and a deterministic
 fixed backend for tests.
 
 ## Dependency expectations
