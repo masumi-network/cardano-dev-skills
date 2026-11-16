@@ -1,6 +1,150 @@
 This file contains a summary of changes to Haskell.nix and `nix-tools`
 that will impact users.
 
+## November 8, 2026
+
+  * A v2 slice's pkg-config table now holds only the names declared by the
+    packages its solver can meet (its own, its staged build-tool and
+    metadata sources, and its dep slices'), instead of the whole nixpkgs
+    mapping.  A change to a mapping entry, such as an overlay adding to
+    `haskell-nix.extraPkgconfigMappings`, now rebuilds only the slices
+    whose closure declares that name.  Previously every slice changed
+    with any mapping, so no v2 slice Hydra built (CI adds a `libsodium`
+    mapping) matched a user's evaluation, and none could be substituted.
+    Now only slices that use a remapped name differ, and those really are
+    different builds (under CI's overlay, slices that use `libsodium` are
+    built against `libsodium-18`).
+  * v1 components and setups no longer carry the mapping's metadata in
+    their pkg-config wrapper (`cabalPkgConfigWrapperReal`).
+    `cabalPkgConfigWrapper` keeps the whole map and is now used only by
+    the v2 shell; overriding it no longer affects component builds.
+  * Every v2 slice, and every v1 component or setup with
+    `pkgconfig-depends`, rebuilds once.
+
+## November 5, 2026
+
+`builderVersion = 2` and the stable-haskell GHCs:
+
+  * The v2 builder's cabal-install (`haskell-nix.v2-cabal-install`) and
+    the fork nix-tools that make v2 plans (`nix-tools-unchecked-sh`) now
+    come from stable-haskell's `merge` branch, cabal-install 3.19.0.0.
+    UnitIds change, so every slice rebuilds once.
+  * That cabal uses the normal cabal store rather than a project-local
+    `dist-newstyle/store`, so the v2 shell now seeds the store `cabal path
+    --store-dir` reports (usually `~/.cabal/store`).
+    `haskell-nix-cabal-store-sync` takes that store dir, not a build dir,
+    as its optional argument.
+
+## October 25, 2026
+
+  * Removed the `haskell-nix` knobs `emulatorNativeBuilderPackages` and
+    `emulatorNativeBuilderTH`.  Template Haskell slices, the `base` and
+    `th-orphans` slices and the native GHC 9.14 library no longer get
+    `emulatorSystemFeatures`: built on emulated (`nix-linux-builder`)
+    hosts they all passed.  `emulatorSystemFeatures` now applies only to
+    checks for hosts matching `emulatorNativeBuilderCheck`, by default
+    32-bit x86 Linux, whose exes cannot run under Rosetta.
+    `usesTemplateHaskell` stays: it still selects `-fexternal-interpreter`
+    for dynamically linked musl hosts.
+
+## October 22, 2026
+
+haskell.nix, hackage.nix and stackage.nix have moved from
+`github:input-output-hk` to `github:ican-group`.  The old URLs keep
+working through GitHub's redirect, but projects whose `flake.lock`,
+`nix/sources.json` (niv) or `npins/sources.json` still name the old owner
+for `haskell.nix`, `hackage.nix` or `stackage.nix` now get an evaluation
+warning listing those pins and how to fix each one.  Set
+`silenceOrgMoveWarning = true;` in the project to hide it.
+
+To move a project, change `input-output-hk` to `ican-group` in its pins
+(eg. `inputs.haskellNix.url = "github:ican-group/haskell.nix";`) and
+update the lock.
+
+haskell.nix's own references use the new owner too, including the ones
+it hands to users: the `hix init` and `haskell-nix` flake templates, the
+`hix` project boilerplate, the `fetchTarball` default in nix-tools'
+generated `default.nix` (from the next nix-tools release), and the
+documentation, now at <https://ican-group.github.io/haskell.nix/>.
+
+## October 16, 2026
+
+New compiler: `ghc914-sh`, GHC 9.14 from the stable-haskell fork, built
+with the stable-haskell Makefile rather than hadrian, and its boot
+libraries built by haskell.nix's v2 builder.  Projects using it get
+`builderVersion = 2` by default (v1 cannot build against the fork's boot
+packages).  It ships no shared libraries (`enableShared = false`), no
+haddock for cross targets and no DWARF build, and the tests that need
+those are skipped for it.
+
+Breaking changes around the eval platform (the platform `cabal` /
+`nix-tools` run on during plan construction).  Everything that used to
+take a nixpkgs for this now takes a system string, `evalSystem`, and
+reuses one memoised nixpkgs per system:
+
+  * The project option `evalPackages` is deprecated: set
+    `evalSystem = "<system>"` instead.  Setting `evalPackages` still works
+    for now (its system becomes the eval system) but warns.
+  * `haskell-nix.tool'` / `tools'` take an `evalSystem` string as their
+    first argument.  A nixpkgs is still accepted, with a warning.
+  * `haskell-nix.roots` takes `evalSystem`; its `evalPackages` argument is
+    still accepted, with a warning.
+  * The compiler override argument `ghcEvalPackages` is gone.  Compilers
+    now carry memoised per-eval-system variants: select
+    `ghc.evalWith.${evalSystem}` (or `ghc.override { evalSystem = ...; }`).
+  * `haskellLib.isNativeMusl` no longer classifies darwin → linux-musl
+    (same CPU architecture) as *native* musl; it now additionally requires
+    the build platform to be Linux, so those darwin-hosted builds take the
+    cross-compilation path.
+
+`haskell-nix.roots` (and `p.roots`) now also link the plan-nix
+derivations behind the compiler (hadrian, or stage1/stage2 for the
+stable-haskell GHCs; `hadrian-plan` is now `plan-hadrian`), the
+iserv-proxy projects, the v2 builder's `cabal-install`, and the eval-time
+dummy ghc/ghc-pkg pair — each for the build system and, when
+`evalSystem` differs, an `-eval` twin.  Building `roots` in CI therefore
+caches everything a later evaluation needs to realise via IFD, so
+evaluators (e.g. hydra's) substitute the plans instead of building them
+mid-eval.
+
+`builderVersion = 2`:
+
+  * Slices are now built with the stable-haskell fork of cabal-install
+    (3.17.0.1, `haskell-nix.v2-cabal-install`) for every compiler, not
+    mainline 3.16.1.0, and v2 projects' plans are made with the matching
+    fork nix-tools (`nix-tools-unchecked-sh`), so the plan's UnitIds are
+    the ones the slices compute.  UnitIds change, so every slice rebuilds
+    once.  v1 projects' plans are unchanged.
+  * That cabal keeps a project-local store, `dist-newstyle/store`, and the
+    v2 shell now seeds it there (under the project root, found as cabal
+    finds it) rather than `~/.cabal/store`.  The shell's generated
+    `cabal.project.local` also goes to the project root, and names the
+    build compiler, without which the fork cabal resolves its build stage
+    (`base` and all) from hackage.
+  * `shellFor`'s `tools.cabal = "latest"` now means the slice builder's
+    cabal-install, like `{}` already did: the newest one on hackage cannot
+    reuse the slices.  The same derivation is `project.v2-cabal-install`,
+    for shells not built with `shellFor`.
+
+Cross compilation:
+
+  * New component option `usesTemplateHaskell`, and new `haskell-nix`
+    knobs `emulatorSystemFeatures`, `emulatorNativeBuilderPackages`,
+    `emulatorNativeBuilderCheck` and `emulatorNativeBuilderTH` (plus
+    `haskellLib.emulatorRunAttrs`), for build farms that need to keep
+    emulator-run derivations (TH splices, test runs) off builders where
+    the emulator is itself emulated.  `emulatorSystemFeatures` is empty
+    by default, which turns the whole mechanism off.
+  * x86_64-linux cross builds use a user-mode-only qemu (9.1 – 11) with a
+    patch for running under Rosetta, and the iserv-proxy input now
+    follows `stable-haskell/iserv-proxy`.
+  * New `hyper-linux` flake input (`pkgs.hyper-linux`): on Apple Silicon
+    it is the emulator for darwin → linux cross builds, running Template
+    Haskell splices and cross-built test exes, where qemu-user does not
+    exist.
+  * The linux-cross and mingw test wrappers now quote their arguments
+    (`"$@"`), so arguments containing spaces reach the test exe intact.
+
 ## August 17, 2026
 
 `builderVersion = 2`: `shellFor`'s `tools.cabal` now defaults to the same
@@ -521,7 +665,7 @@ As a result, there will be some drawbacks:
 * Removed `./nixpkgs` directory, use  `(import ./. {}).sources`
   or `./nix/sources.nix` instead.
 * Removes V1 interface for details on how to fix old code see:
-    https://github.com/input-output-hk/haskell.nix/issues/709
+    https://github.com/ican-group/haskell.nix/issues/709
 * Removed defaultCompilerNixName.
 * cabalProject, cabalProject', hackage-project and hackage-package
   now require a `compiler-nix-name` argument.
@@ -554,23 +698,23 @@ As a result, there will be some drawbacks:
     cached. Usage of `cleanSourceHaskell` will need to be updated.
 
 ## October 12, 2019
- * [`shellFor`](https://input-output-hk.github.io/haskell.nix/reference/library/#shellfor) no longer sets `CABAL_CONFIG` by default.
+ * [`shellFor`](https://ican-group.github.io/haskell.nix/reference/library.html#shellfor) no longer sets `CABAL_CONFIG` by default.
    This avoids surprising users, but means that Cabal may select a plan which is different to your Haskell.nix package set.
    If you would like the old behaviour, use `shellFor { exactDeps = true; }`.
 
 ## August 9, 2019
- * Add the [`haskellLib.collectComponents`](https://input-output-hk.github.io/haskell.nix/reference/library/#haskellLib) function.
+ * Add the [`haskellLib.collectComponents`](https://ican-group.github.io/haskell.nix/reference/library.html#haskelllib) function.
 
 ## June 21, 2019
- * Add `ghcWithPackages` and `ghcWithHoogle` to hsPkgs ([documentation](https://input-output-hk.github.io/haskell.nix/reference/library/#package-set-functions).
+ * Add `ghcWithPackages` and `ghcWithHoogle` to hsPkgs ([documentation](https://ican-group.github.io/haskell.nix/reference/library.html#ghcwithpackages).
  * Benchmark components can now build successfully.
  * Reduced the closure bloat of nix-tools, and added closure size limit to CI.
  * Added more reference documentation and set up auto-generated
-   documentation for [Module Options](https://input-output-hk.github.io/haskell.nix/reference/modules/).
+   documentation for [Module Options](https://ican-group.github.io/haskell.nix/reference/modules.html).
  * Miscellaneous bug fixes.
 
 ## June 7, 2019
-  * Several additions to the [documentation](https://input-output-hk.github.io/haskell.nix/).
+  * Several additions to the [documentation](https://ican-group.github.io/haskell.nix/).
     * More information about getting nix-tools, Haskell.nix, pinning.
     * Updates the stack-to-nix and cabal-to-nix guides.
     * Adds a section on development environments.
@@ -606,7 +750,7 @@ As a result, there will be some drawbacks:
 
 ## Mar 15, 2019
   * `overlays` was renamed to `extras` in
-    [#79](https://github.com/input-output-hk/haskell.nix/pull/79)
+    [#79](https://github.com/ican-group/haskell.nix/pull/79)
     to prevent confusion between the notion of Nix overlays.
 
     Therefore `plan-pkgs` and `stack-pkgs` as generated by `plan-to-nix` and `stack-to-nix` will
