@@ -1,66 +1,49 @@
 ---
-title: Local Node
+title: Local ImmutableDB
+sidebar:
+  order: 3
 ---
 
 import { Aside } from '@astrojs/starlight/components';
 
-Bootstrapping from a local full node is an efficient way to synchronize Dolos from a trusted source. The downside is having to run two processes (the source node + dolos) where some overlap exist. This method involves connecting via Ouroboros node-to-node mini-protocols.
+A Cardano node keeps the settled part of the chain in its _ImmutableDB_. If you run a `cardano-node`, or hold a database a Mithril download left, Dolos can replay it directly: no download, and no network until the replay is done.
+
+`bootstrap immutabledb` runs the same replay as [`bootstrap mithril`](./mithril) does after its download. What differs is the trust: nothing certifies a local database, so the one check is that it belongs to the configured network. The network magic the node records beside `immutable/`, in `protocolMagicId`, must be the configuration's; a database of another network is refused before anything is written.
+
+## Execution
+
+Point the command at the node's database directory, the one holding `immutable/` and `protocolMagicId`:
+
+```sh
+dolos bootstrap immutabledb --source /var/lib/cardano/db
+```
+
+The database is only read, never written. The replay imports every block into the archive and rebuilds the ledger state from them, which takes from minutes to hours depending on the network.
+
+In addition to the [bootstrap flags](../bootstrap), the command takes:
+
+| arg | description | default |
+| --- | ----------- | ------- |
+| `--source <PATH>` | the node database directory; required | |
+| `--continue` | resume an interrupted replay from its committed position | `false` |
+| `--stop-epoch <N>` | stop once the ledger reaches epoch `N` | none |
+| `--chunk-size <N>` | blocks per batch; more is faster but uses more memory | `500` |
 
 <Aside type="note">
-If you're looking for way of bootstrapping Dolos but you don't have a local full node, please refer to the alternative [Public Relay](./relay) option.
+An interrupted replay keeps what it committed. Run the command again with `--continue` to resume from there.
 </Aside>
 
-In essence, this bootstrapping procedure is just about starting Dolos and let it do its thing. From Dolos' perspective, the procedure involves the following:
+## After the replay
 
-1. Read the genesis files to load initial data
-2. Connect to the configured upstream node using Ouroboros
-3. Start the chain-sync mini-protocol from origin
-4. Keep syncing until reaching the tip of the chain
-
-## Configuration
-
-To bootstrap using a local node, the required configuration includes the `upstream` section for the peer connection and the `chain` section for the network parameters:
+The ImmutableDB stops short of the tip: the node's most recent blocks are still volatile. Follow the chain from the configured upstream to reach it, which can be the same local node:
 
 ```toml
 [upstream]
 peer_address = "localhost:30000"
-
-[chain]
-type = "cardano"
-magic = 1
-is_testnet = true
 ```
-
-| section  | property     | type    | example           |
-| -------- | ------------ | ------- | ----------------- |
-| upstream | peer_address | string  | "localhost:30000" |
-| chain    | magic        | integer | 1                 |
-| chain    | is_testnet   | boolean | true              |
-
-- `peer_address`: network address of peer node using `{host}:{port}` syntax.
-- `magic`: the Cardano network magic number.
-- `is_testnet`: flag to indicate if this network is a testnet or not.
-
-<Aside type="tip">
-We use `localhost` as an example but it can also be a different hostname as long as the TCP port is reachable.
-</Aside>
-
-## Execution
-
-To initialize the data stores for syncing from origin, run:
-
-```sh
-dolos bootstrap relay
-```
-
-Then start the daemon to begin syncing:
 
 ```sh
 dolos daemon
 ```
 
-The process will take several hours depending on the chain you're synchronizing. You'll see different log outputs, some lines will indicate the _slot_ of the latest block pulled from the relay node. Compare this value to the tip of the chain as shown in a public explorer to track the overall progress.
-
-<Aside type="note">
-The process supports resuming from previous runs. You can safely interrupt the process and continue again from where you left off by just running the command again.
-</Aside>
+See [operation modes](../operations/modes) for `daemon`, `serve` and `sync catchup`.
