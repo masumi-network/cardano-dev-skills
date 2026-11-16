@@ -163,6 +163,16 @@ func (r ResolvedInput) ToPlutusData() data.PlutusData {
 	)
 }
 
+// Equals reports whether this resolved input's underlying UTxO reference
+// identifies the same input as other, compared by (TxId, Index) rather than
+// by formatting both sides through String(): this is the single place that
+// definition lives, used by every input-resolution loop that runs once per
+// input or redeemer per transaction during ledger validation, where the
+// allocation cost of a String()-based comparison compounds quickly.
+func (r ResolvedInput) Equals(other lcommon.TransactionInput) bool {
+	return r.Id.Id() == other.Id() && r.Id.Index() == other.Index()
+}
+
 type Redeemer struct {
 	Tag     lcommon.RedeemerTag
 	Index   uint32
@@ -451,11 +461,11 @@ func (w WithZeroAdaAsset) ToPlutusData() data.PlutusData {
 		}
 		var assetsOutputPairs, assetsMintPairs [][2]data.PlutusData
 		if v.AssetsOutput != nil {
-			assetsOutputPairs = v.AssetsOutput.ToPlutusData().(*data.Map).Pairs
+			assetsOutputPairs = v.AssetsOutput.ToPlutusData().(*data.Map).Pairs()
 			totalCap += len(assetsOutputPairs)
 		}
 		if v.AssetsMint != nil {
-			assetsMintPairs = v.AssetsMint.ToPlutusData().(*data.Map).Pairs
+			assetsMintPairs = v.AssetsMint.ToPlutusData().(*data.Map).Pairs()
 			totalCap += len(assetsMintPairs)
 		}
 
@@ -503,7 +513,7 @@ func (w WithZeroAdaAsset) ToPlutusData() data.PlutusData {
 			// handling in BabbageTransactionOutput.ToPlutusData.
 			datumOption = data.NewConstr(
 				2,
-				data.Normalize(tmp.Data),
+				data.NormalizeShared(tmp.Data),
 			)
 		} else if tmp := v.DatumHash(); tmp != nil {
 			datumOption = data.NewConstr(
@@ -614,6 +624,10 @@ func (w WithPartialCertificates) ToPlutusData() data.PlutusData {
 				toPlutusData(c.PoolKeyHash),
 				data.NewInteger(new(big.Int).SetUint64(c.Epoch)),
 			)
+		case *lcommon.GenesisKeyDelegationCertificate:
+			return data.NewConstr(5)
+		case *lcommon.MoveInstantaneousRewardsCertificate:
+			return data.NewConstr(6)
 		default:
 			panic(fmt.Sprintf("unsupported type: %T", c))
 		}

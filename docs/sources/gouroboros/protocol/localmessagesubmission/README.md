@@ -76,10 +76,12 @@ Messages may be rejected for various reasons including:
 ```go
 localmessagesubmission.NewConfig(
     localmessagesubmission.WithSubmitMessageFunc(submitCallback),
+    localmessagesubmission.WithSubmitRefusedFunc(refusedCallback),
     localmessagesubmission.WithAcceptMessageFunc(acceptCallback),
     localmessagesubmission.WithRejectMessageFunc(rejectCallback),
     localmessagesubmission.WithAuthenticator(authenticator),
     localmessagesubmission.WithTTLValidator(ttlValidator),
+    localmessagesubmission.WithMaxReplayEntries(10000),
     localmessagesubmission.WithTimeout(30 * time.Second),
 )
 ```
@@ -108,5 +110,16 @@ Messages require cryptographic authentication using KES (Key-Evolving Signatures
 - Part of CIP-0137 (Distributed Message Queue)
 - Messages are authenticated using KES signatures
 - TTL validation prevents message replay
+- An authenticated message ID is reserved while the application callback
+  runs and remains reserved until expiration only if the callback accepts
+  the message; a message the callback rejects may be submitted again
+- Duplicate submissions are rejected with `AlreadyReceived` before the
+  application callback runs; `WithSubmitRefusedFunc` observes these and every
+  other rejection the server makes before the callback, for example to count
+  them
+- The replay cache is bounded and rejects new IDs while full
+- The replay cache belongs to the Config returned by `NewConfig`; create one
+  Config outside the connection accept loop and reuse it, because separate
+  Configs do not de-duplicate against each other
 - Default authenticator uses standard KES verification
 - Used for secure off-chain communication between nodes
