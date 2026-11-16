@@ -17,6 +17,7 @@ package event
 import (
 	"encoding/hex"
 	"math"
+	"slices"
 
 	"github.com/blinklabs-io/gouroboros/cbor"
 	"github.com/blinklabs-io/gouroboros/ledger"
@@ -116,7 +117,7 @@ type UpdateCommitteeActionData struct {
 // CommitteeMember represents a committee member with their term epoch
 type CommitteeMember struct {
 	Credential string `json:"credential"`
-	Epoch      uint   `json:"epoch"`
+	Epoch      uint64 `json:"epoch"`
 }
 
 // NewConstitutionActionData represents a New Constitution governance action
@@ -221,7 +222,7 @@ type ProposalProcedureData struct {
 	RewardAccount string        `json:"rewardAccount"`
 	ActionType    string        `json:"actionType"`
 	ActionData    GovActionData `json:"actionData"`
-	Anchor        AnchorData    `json:"anchor,omitempty"`
+	Anchor        AnchorData    `json:"anchor"`
 }
 
 // VotingProcedureData represents a vote cast
@@ -232,7 +233,7 @@ type VotingProcedureData struct {
 	GovActionTxId  string     `json:"govActionTxId"`
 	GovActionIndex uint32     `json:"govActionIndex"`
 	Vote           string     `json:"vote"`
-	Anchor         AnchorData `json:"anchor,omitempty"`
+	Anchor         AnchorData `json:"anchor"`
 }
 
 // DRepCertificateData represents DRep registration/update/retirement
@@ -240,8 +241,8 @@ type DRepCertificateData struct {
 	CertificateType string     `json:"certificateType"`
 	DRepHash        string     `json:"drepHash"`
 	DRepId          string     `json:"drepId"`
-	Deposit         int64      `json:"deposit,omitempty"`
-	Anchor          AnchorData `json:"anchor,omitempty"`
+	Deposit         uint64     `json:"deposit,omitempty"`
+	Anchor          AnchorData `json:"anchor"`
 }
 
 // VoteDelegationCertificateData represents vote delegation
@@ -252,7 +253,7 @@ type VoteDelegationCertificateData struct {
 	DRepHash        string `json:"drepHash,omitempty"`
 	DRepId          string `json:"drepId,omitempty"`
 	PoolKeyHash     string `json:"poolKeyHash,omitempty"`
-	Deposit         int64  `json:"deposit,omitempty"`
+	Deposit         uint64 `json:"deposit,omitempty"`
 }
 
 // CommitteeCertificateData represents CC hot key auth or resignation
@@ -260,7 +261,7 @@ type CommitteeCertificateData struct {
 	CertificateType string     `json:"certificateType"`
 	ColdCredential  string     `json:"coldCredential"`
 	HotCredential   string     `json:"hotCredential,omitempty"`
-	Anchor          AnchorData `json:"anchor,omitempty"`
+	Anchor          AnchorData `json:"anchor"`
 }
 
 // AnchorData represents a governance anchor (URL + hash)
@@ -306,7 +307,9 @@ func NewGovernanceEvent(
 	evt.VotingProcedures = extractVotingProcedures(tx)
 
 	// Extract governance certificates
-	evt.DRepCertificates, evt.VoteDelegationCertificates, evt.CommitteeCertificates = extractGovernanceCertificates(tx)
+	evt.DRepCertificates, evt.VoteDelegationCertificates, evt.CommitteeCertificates = extractGovernanceCertificates(
+		tx,
+	)
 
 	return evt
 }
@@ -319,12 +322,7 @@ func HasGovernanceData(tx ledger.Transaction) bool {
 	if len(tx.ProposalProcedures()) > 0 {
 		return true
 	}
-	for _, cert := range tx.Certificates() {
-		if isGovernanceCertificate(cert) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(tx.Certificates(), isGovernanceCertificate)
 }
 
 func isGovernanceCertificate(cert ledger.Certificate) bool {
@@ -484,7 +482,9 @@ func drepBech32Prefix(cred lcommon.Credential) string {
 	return "drep"
 }
 
-func extractDRepCertificate(cert ledger.Certificate) (DRepCertificateData, bool) {
+func extractDRepCertificate(
+	cert ledger.Certificate,
+) (DRepCertificateData, bool) {
 	switch c := cert.(type) {
 	case *lcommon.RegistrationDrepCertificate:
 		data := DRepCertificateData{
@@ -582,7 +582,7 @@ func extractVoteDelegation(
 	certType string,
 	stakeCred lcommon.Credential,
 	drep lcommon.Drep,
-	deposit int64,
+	deposit uint64,
 ) VoteDelegationCertificateData {
 	data := VoteDelegationCertificateData{
 		CertificateType: certType,
@@ -598,7 +598,8 @@ func extractVoteDelegation(
 	case lcommon.DrepTypeScriptHash:
 		data.DRepType = "ScriptHash"
 		data.DRepHash = hex.EncodeToString(drep.Credential)
-		data.DRepId = lcommon.NewBlake2b224(drep.Credential).Bech32("drep_script")
+		data.DRepId = lcommon.NewBlake2b224(drep.Credential).
+			Bech32("drep_script")
 	case lcommon.DrepTypeAbstain:
 		data.DRepType = "Abstain"
 	case lcommon.DrepTypeNoConfidence:
@@ -657,7 +658,9 @@ func extractGovActionData(action lcommon.GovAction) GovActionData {
 	return data
 }
 
-func extractTreasuryWithdrawalAction(a *lcommon.TreasuryWithdrawalGovAction) *TreasuryWithdrawalActionData {
+func extractTreasuryWithdrawalAction(
+	a *lcommon.TreasuryWithdrawalGovAction,
+) *TreasuryWithdrawalActionData {
 	data := &TreasuryWithdrawalActionData{
 		Withdrawals: make([]TreasuryWithdrawalItem, 0, len(a.Withdrawals)),
 	}
@@ -673,7 +676,9 @@ func extractTreasuryWithdrawalAction(a *lcommon.TreasuryWithdrawalGovAction) *Tr
 	return data
 }
 
-func extractUpdateCommitteeAction(a *lcommon.UpdateCommitteeGovAction) *UpdateCommitteeActionData {
+func extractUpdateCommitteeAction(
+	a *lcommon.UpdateCommitteeGovAction,
+) *UpdateCommitteeActionData {
 	data := &UpdateCommitteeActionData{
 		PrevActionId:    extractGovActionId(a.ActionId),
 		MembersToRemove: make([]string, 0, len(a.Credentials)),
@@ -690,7 +695,10 @@ func extractUpdateCommitteeAction(a *lcommon.UpdateCommitteeGovAction) *UpdateCo
 
 	// Members to remove
 	for _, cred := range a.Credentials {
-		data.MembersToRemove = append(data.MembersToRemove, hex.EncodeToString(cred.Hash().Bytes()))
+		data.MembersToRemove = append(
+			data.MembersToRemove,
+			hex.EncodeToString(cred.Hash().Bytes()),
+		)
 	}
 
 	// Members to add with term epochs
@@ -704,7 +712,9 @@ func extractUpdateCommitteeAction(a *lcommon.UpdateCommitteeGovAction) *UpdateCo
 	return data
 }
 
-func extractNewConstitutionAction(a *lcommon.NewConstitutionGovAction) *NewConstitutionActionData {
+func extractNewConstitutionAction(
+	a *lcommon.NewConstitutionGovAction,
+) *NewConstitutionActionData {
 	data := &NewConstitutionActionData{
 		PrevActionId: extractGovActionId(a.ActionId),
 		Anchor: AnchorData{
@@ -718,7 +728,9 @@ func extractNewConstitutionAction(a *lcommon.NewConstitutionGovAction) *NewConst
 	return data
 }
 
-func extractParameterChangeAction(a *conway.ConwayParameterChangeGovAction) *ParameterChangeActionData {
+func extractParameterChangeAction(
+	a *conway.ConwayParameterChangeGovAction,
+) *ParameterChangeActionData {
 	data := &ParameterChangeActionData{
 		PrevActionId: extractGovActionId(a.ActionId),
 	}
@@ -729,32 +741,36 @@ func extractParameterChangeAction(a *conway.ConwayParameterChangeGovAction) *Par
 	return data
 }
 
-func extractProtocolParameterUpdate(u *conway.ConwayProtocolParameterUpdate) *ProtocolParameterUpdateData {
+func extractProtocolParameterUpdate(
+	u *conway.ConwayProtocolParameterUpdate,
+) *ProtocolParameterUpdateData {
 	data := &ProtocolParameterUpdateData{
-		MinFeeA:                    u.MinFeeA,
-		MinFeeB:                    u.MinFeeB,
-		MaxBlockBodySize:           u.MaxBlockBodySize,
-		MaxTxSize:                  u.MaxTxSize,
-		MaxBlockHeaderSize:         u.MaxBlockHeaderSize,
-		KeyDeposit:                 u.KeyDeposit,
-		PoolDeposit:                u.PoolDeposit,
-		MaxEpoch:                   u.MaxEpoch,
-		NOpt:                       u.NOpt,
-		A0:                         rationalToFloat(u.A0),
-		Rho:                        rationalToFloat(u.Rho),
-		Tau:                        rationalToFloat(u.Tau),
-		MinPoolCost:                u.MinPoolCost,
-		AdaPerUtxoByte:             u.AdaPerUtxoByte,
-		MaxValueSize:               u.MaxValueSize,
-		CollateralPercentage:       u.CollateralPercentage,
-		MaxCollateralInputs:        u.MaxCollateralInputs,
-		MinCommitteeSize:           u.MinCommitteeSize,
-		CommitteeTermLimit:         u.CommitteeTermLimit,
-		GovActionValidityPeriod:    u.GovActionValidityPeriod,
-		GovActionDeposit:           u.GovActionDeposit,
-		DRepDeposit:                u.DRepDeposit,
-		DRepInactivityPeriod:       u.DRepInactivityPeriod,
-		MinFeeRefScriptCostPerByte: rationalToFloat(u.MinFeeRefScriptCostPerByte),
+		MinFeeA:                 u.MinFeeA,
+		MinFeeB:                 u.MinFeeB,
+		MaxBlockBodySize:        u.MaxBlockBodySize,
+		MaxTxSize:               u.MaxTxSize,
+		MaxBlockHeaderSize:      u.MaxBlockHeaderSize,
+		KeyDeposit:              u.KeyDeposit,
+		PoolDeposit:             u.PoolDeposit,
+		MaxEpoch:                u.MaxEpoch,
+		NOpt:                    u.NOpt,
+		A0:                      rationalToFloat(u.A0),
+		Rho:                     rationalToFloat(u.Rho),
+		Tau:                     rationalToFloat(u.Tau),
+		MinPoolCost:             u.MinPoolCost,
+		AdaPerUtxoByte:          u.AdaPerUtxoByte,
+		MaxValueSize:            u.MaxValueSize,
+		CollateralPercentage:    u.CollateralPercentage,
+		MaxCollateralInputs:     u.MaxCollateralInputs,
+		MinCommitteeSize:        u.MinCommitteeSize,
+		CommitteeTermLimit:      u.CommitteeTermLimit,
+		GovActionValidityPeriod: u.GovActionValidityPeriod,
+		GovActionDeposit:        u.GovActionDeposit,
+		DRepDeposit:             u.DRepDeposit,
+		DRepInactivityPeriod:    u.DRepInactivityPeriod,
+		MinFeeRefScriptCostPerByte: rationalToFloat(
+			u.MinFeeRefScriptCostPerByte,
+		),
 	}
 
 	// ExUnits
@@ -781,16 +797,22 @@ func extractProtocolParameterUpdate(u *conway.ConwayProtocolParameterUpdate) *Pr
 
 	// Voting thresholds
 	if u.PoolVotingThresholds != nil {
-		data.PoolVotingThresholds = extractPoolVotingThresholds(u.PoolVotingThresholds)
+		data.PoolVotingThresholds = extractPoolVotingThresholds(
+			u.PoolVotingThresholds,
+		)
 	}
 	if u.DRepVotingThresholds != nil {
-		data.DRepVotingThresholds = extractDRepVotingThresholds(u.DRepVotingThresholds)
+		data.DRepVotingThresholds = extractDRepVotingThresholds(
+			u.DRepVotingThresholds,
+		)
 	}
 
 	return data
 }
 
-func extractPoolVotingThresholds(t *conway.PoolVotingThresholds) *PoolVotingThresholdsData {
+func extractPoolVotingThresholds(
+	t *conway.PoolVotingThresholds,
+) *PoolVotingThresholdsData {
 	return &PoolVotingThresholdsData{
 		MotionNoConfidence: rationalToFloat(&t.MotionNoConfidence),
 		CommitteeNormal:    rationalToFloat(&t.CommitteeNormal),
@@ -800,7 +822,9 @@ func extractPoolVotingThresholds(t *conway.PoolVotingThresholds) *PoolVotingThre
 	}
 }
 
-func extractDRepVotingThresholds(t *conway.DRepVotingThresholds) *DRepVotingThresholdsData {
+func extractDRepVotingThresholds(
+	t *conway.DRepVotingThresholds,
+) *DRepVotingThresholdsData {
 	return &DRepVotingThresholdsData{
 		MotionNoConfidence: rationalToFloat(&t.MotionNoConfidence),
 		CommitteeNormal:    rationalToFloat(&t.CommitteeNormal),

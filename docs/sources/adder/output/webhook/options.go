@@ -25,7 +25,7 @@ type WebhookOptionFunc func(*WebhookOutput)
 // WithLogger specifies the logger object to use for logging messages
 func WithLogger(logger plugin.Logger) WebhookOptionFunc {
 	return func(o *WebhookOutput) {
-		o.logger = logger
+		o.SetLogger(logger)
 	}
 }
 
@@ -67,5 +67,13 @@ func WithRetryConfig(
 		if maxBackoff > 0 {
 			o.maxBackoff = maxBackoff
 		}
+	}
+}
+
+// WithDurableQueue stores pending webhook deliveries in a SQLite database.
+func WithDurableQueue(path string, maxPending int) WebhookOptionFunc {
+	return func(o *WebhookOutput) {
+		o.statePath = path
+		o.maxPending = maxPending
 	}
 }

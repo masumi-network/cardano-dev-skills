@@ -15,17 +15,12 @@
 package webhook
 
 import (
+	"errors"
+	"fmt"
+
 	"github.com/blinklabs-io/adder/internal/logging"
 	"github.com/blinklabs-io/adder/plugin"
 )
-
-var cmdlineOptions struct {
-	format     string
-	url        string
-	username   string
-	password   string
-	skipVerify bool
-}
 
 func init() {
 	plugin.Register(
@@ -33,56 +28,68 @@ func init() {
 			Type:               plugin.PluginTypeOutput,
 			Name:               "webhook",
 			Description:        "send events via HTTP POST to a webhook server",
-			NewFromOptionsFunc: NewFromCmdlineOptions,
+			NewFromOptionsFunc: newFromOptions,
 			Options: []plugin.PluginOption{
 				{
 					Name:         "format",
 					Type:         plugin.PluginOptionTypeString,
 					Description:  "specifies the webhook payload format to use",
 					DefaultValue: "adder",
-					Dest:         &cmdlineOptions.format,
 				},
 				{
 					Name:         "url",
 					Type:         plugin.PluginOptionTypeString,
 					Description:  "specifies the url to use",
 					DefaultValue: "http://localhost:3000",
-					Dest:         &cmdlineOptions.url,
 				},
 				{
 					Name:         "tls-skip-verify",
 					Type:         plugin.PluginOptionTypeBool,
 					Description:  "skip tls verification (for self-signed certs)",
 					DefaultValue: false,
-					Dest:         &cmdlineOptions.skipVerify,
 				},
 				{
 					Name:         "username",
 					Type:         plugin.PluginOptionTypeString,
 					Description:  "specifies the username for basic auth",
 					DefaultValue: "",
-					Dest:         &cmdlineOptions.username,
 				},
 				{
 					Name:         "password",
 					Type:         plugin.PluginOptionTypeString,
 					Description:  "specifies the password for basic auth",
 					DefaultValue: "",
-					Dest:         &cmdlineOptions.password,
 				},
+				{Name: "state-path", Type: plugin.PluginOptionTypeString, Description: "SQLite path for restart-safe pending deliveries", DefaultValue: ""},
+				{Name: "max-pending", Type: plugin.PluginOptionTypeInt, Description: "maximum persisted pending deliveries", DefaultValue: 1024},
 			},
 		},
 	)
 }
 
-func NewFromCmdlineOptions() plugin.Plugin {
+func newFromOptions(values plugin.Options) (plugin.ManagedPlugin, error) {
+	if values.String("format") != "adder" &&
+		values.String("format") != "discord" {
+		return nil, errors.New("format must be adder or discord")
+	}
+	if err := plugin.ValidateHTTPURL(values.String("url")); err != nil {
+		return nil, fmt.Errorf("url: %w", err)
+	}
+	if values.String("state-path") != "" && values.Int("max-pending") < 11 {
+		return nil, errors.New("max-pending must be at least 11 with state-path")
+	}
+	if _, err := durableFileName(values.String("state-path")); err != nil {
+		return nil, err
+	}
+
 	p := New(
 		WithLogger(
 			logging.GetLogger().With("plugin", "output.webhook"),
 		),
-		WithUrl(cmdlineOptions.url, cmdlineOptions.skipVerify),
-		WithBasicAuth(cmdlineOptions.username, cmdlineOptions.password),
-		WithFormat(cmdlineOptions.format),
+		WithUrl(values.String("url"), values.Bool("tls-skip-verify")),
+		WithBasicAuth(values.String("username"), values.String("password")),
+		WithFormat(values.String("format")),
+		WithDurableQueue(values.String("state-path"), values.Int("max-pending")),
 	)
-	return p
+	return p, nil
 }

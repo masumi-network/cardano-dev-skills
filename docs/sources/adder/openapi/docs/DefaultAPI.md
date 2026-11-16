@@ -1,12 +1,15 @@
 # \DefaultAPI
 
-All URIs are relative to */v1*
+All paths below append to the configured server URL. Use an absolute URL ending
+in `/v1`. These methods exist in [api_default.go](../api_default.go); their
+string return types reflect the generated client, while current POST/DELETE
+server successes have empty bodies. FCM routes require the push output.
 
 Method | HTTP request | Description
 ------------- | ------------- | -------------
-[**FcmPost**](DefaultAPI.md#FcmPost) | **Post** /fcm | Store FCM Token
-[**FcmTokenDelete**](DefaultAPI.md#FcmTokenDelete) | **Delete** /fcm/{token} | Delete FCM Token
-[**FcmTokenGet**](DefaultAPI.md#FcmTokenGet) | **Get** /fcm/{token} | Get FCM Token
+[**FcmPost**](DefaultAPI.md#fcmpost) | **Post** /fcm | Store FCM Token
+[**FcmTokenDelete**](DefaultAPI.md#fcmtokendelete) | **Delete** /fcm/{token} | Delete FCM Token
+[**FcmTokenGet**](DefaultAPI.md#fcmtokenget) | **Get** /fcm/{token} | Get FCM Token
 
 
 
@@ -27,13 +30,16 @@ import (
 	"context"
 	"fmt"
 	"os"
-	openapiclient "github.com/blinklabs-io/cardano-node-api/openapi"
+	openapiclient "github.com/blinklabs-io/adder/openapi"
 )
 
 func main() {
 	body := *openapiclient.NewPushTokenRequest("FcmToken_example") // PushTokenRequest | FCM Token Request
 
 	configuration := openapiclient.NewConfiguration()
+	configuration.Servers = openapiclient.ServerConfigurations{
+		{URL: "http://127.0.0.1:8080/v1"},
+	}
 	apiClient := openapiclient.NewAPIClient(configuration)
 	resp, r, err := apiClient.DefaultAPI.FcmPost(context.Background()).Body(body).Execute()
 	if err != nil {
@@ -60,7 +66,7 @@ Name | Type | Description  | Notes
 
 ### Return type
 
-**string**
+**string** (empty for current successful server responses; inspect HTTP status)
 
 ### Authorization
 
@@ -93,13 +99,16 @@ import (
 	"context"
 	"fmt"
 	"os"
-	openapiclient "github.com/blinklabs-io/cardano-node-api/openapi"
+	openapiclient "github.com/blinklabs-io/adder/openapi"
 )
 
 func main() {
 	token := "token_example" // string | FCM Token
 
 	configuration := openapiclient.NewConfiguration()
+	configuration.Servers = openapiclient.ServerConfigurations{
+		{URL: "http://127.0.0.1:8080/v1"},
+	}
 	apiClient := openapiclient.NewAPIClient(configuration)
 	resp, r, err := apiClient.DefaultAPI.FcmTokenDelete(context.Background(), token).Execute()
 	if err != nil {
@@ -130,7 +139,7 @@ Name | Type | Description  | Notes
 
 ### Return type
 
-**string**
+**string** (empty for current successful server responses; inspect HTTP status)
 
 ### Authorization
 
@@ -163,13 +172,16 @@ import (
 	"context"
 	"fmt"
 	"os"
-	openapiclient "github.com/blinklabs-io/cardano-node-api/openapi"
+	openapiclient "github.com/blinklabs-io/adder/openapi"
 )
 
 func main() {
 	token := "token_example" // string | FCM Token
 
 	configuration := openapiclient.NewConfiguration()
+	configuration.Servers = openapiclient.ServerConfigurations{
+		{URL: "http://127.0.0.1:8080/v1"},
+	}
 	apiClient := openapiclient.NewAPIClient(configuration)
 	resp, r, err := apiClient.DefaultAPI.FcmTokenGet(context.Background(), token).Execute()
 	if err != nil {
@@ -214,4 +226,3 @@ No authorization required
 [[Back to top]](#) [[Back to API list]](../README.md#documentation-for-api-endpoints)
 [[Back to Model list]](../README.md#documentation-for-models)
 [[Back to README]](../README.md)
-

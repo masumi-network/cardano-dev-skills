@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"slices"
@@ -31,6 +32,7 @@ import (
 
 	_ "github.com/blinklabs-io/adder/docs"
 	"github.com/blinklabs-io/adder/internal/logging"
+	"github.com/blinklabs-io/adder/plugin"
 	httpSwagger "github.com/swaggo/http-swagger/v2"
 )
 
@@ -120,7 +122,7 @@ func ResetHealthCheckers() {
 
 // New initializes the singleton API instance. The debug parameter is retained
 // for backward compatibility; access-log verbosity is now governed by the
-// configured logging level (LOGGING_LEVEL), not by this flag.
+// configured output log level (OUTPUT_LOG_LEVEL), not by this flag.
 func New(debug bool, options ...APIOption) *APIv1 {
 	_ = debug
 	once.Do(func() {
@@ -202,19 +204,30 @@ func (a *APIv1) Shutdown(ctx context.Context) error {
 	if server == nil {
 		return nil
 	}
+	// Shutdown marks the HTTP server as stopping before closing its listeners,
+	// so Serve reports ErrServerClosed instead of an unexpected accept error.
+	var errs []error
+	var shutdownErr error
+	if err := server.Shutdown(ctx); err != nil &&
+		!errors.Is(err, net.ErrClosed) {
+		shutdownErr = fmt.Errorf("shutting down API server: %w", err)
+		errs = append(errs, shutdownErr)
+	}
+	// Start may return before Serve registers the listener with net/http.
+	// In that case Shutdown cannot close it, so retain this fallback.
 	if listener != nil {
-		if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-			return fmt.Errorf("closing API listener: %w", err)
+		if err := listener.Close(); err != nil &&
+			!errors.Is(err, net.ErrClosed) {
+			errs = append(errs, fmt.Errorf("closing API listener: %w", err))
 		}
 	}
-	if err := server.Shutdown(ctx); err != nil && !errors.Is(err, net.ErrClosed) {
-		return fmt.Errorf("shutting down API server: %w", err)
+	if shutdownErr == nil {
+		a.mu.Lock()
+		a.server = nil
+		a.listener = nil
+		a.mu.Unlock()
 	}
-	a.mu.Lock()
-	a.server = nil
-	a.listener = nil
-	a.mu.Unlock()
-	return nil
+	return errors.Join(errs...)
 }
 
 // AddRoute registers handler for method+path under the configured group base
@@ -474,7 +487,7 @@ func handlePing(w http.ResponseWriter, _ *http.Request) {
 }
 
 // @Summary		Healthcheck Endpoint
-// @Description	Reports the health status of the running pipeline and registered checkers. Returns 503 if any registered checker is unhealthy.
+// @Description	Reports the health status and sanitized diagnostics of registered checkers. Returns 503 if any registered checker is unhealthy.
 // @Produce		json
 // @Success		200	{object}	map[string]any	"Healthy status response"
 // @Failure		503	{object}	map[string]any	"Service Unavailable response"
@@ -485,22 +498,47 @@ func handleHealthcheck(w http.ResponseWriter, _ *http.Request) {
 	checkers := slices.Clone(healthCheckers)
 	healthCheckersMu.RUnlock()
 
-	// If no health checkers are registered, report as healthy
-	if len(checkers) == 0 {
-		WriteJSON(w, http.StatusOK, map[string]any{"failed": false})
-		return
-	}
-
-	// Check all registered health checkers
+	response := map[string]any{"failed": false}
+	details := make([]map[string]any, 0, len(checkers))
 	for _, hc := range checkers {
-		if !hc.IsRunning() {
-			WriteJSON(w, http.StatusServiceUnavailable, map[string]any{
-				"failed": true,
-				"reason": "pipeline is not running",
-			})
-			return
+		running := hc.IsRunning()
+		entry := map[string]any{"running": running}
+		if provider, ok := hc.(interface{ HealthDetails() plugin.HealthDetails }); ok {
+			health := provider.HealthDetails()
+			if !math.IsNaN(health.UptimeSeconds) &&
+				!math.IsInf(health.UptimeSeconds, 0) &&
+				health.UptimeSeconds >= 0 {
+				entry["uptimeSeconds"] = health.UptimeSeconds
+			}
+			entry["terminalFailure"] = health.TerminalFailure
+			components := make(
+				[]map[string]any,
+				0,
+				min(len(health.Components), 128),
+			)
+			for _, component := range health.Components[:min(len(health.Components), 128)] {
+				if component.Index < 0 ||
+					(component.Role != "input" && component.Role != "filter" && component.Role != "output") ||
+					(component.State != "unknown" && component.State != "starting" &&
+						component.State != "running" && component.State != "stopped" && component.State != "failed") {
+					continue
+				}
+				components = append(components, map[string]any{
+					"role": component.Role, "index": component.Index, "state": component.State,
+				})
+			}
+			entry["components"] = components
+		}
+		details = append(details, entry)
+		if !running {
+			response["failed"] = true
+			response["reason"] = "pipeline is not running"
 		}
 	}
-
-	WriteJSON(w, http.StatusOK, map[string]any{"failed": false})
+	response["checks"] = details
+	status := http.StatusOK
+	if response["failed"] == true {
+		status = http.StatusServiceUnavailable
+	}
+	WriteJSON(w, status, response)
 }
