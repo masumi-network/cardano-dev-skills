@@ -29,7 +29,7 @@ File format: [peer-snapshot.schema.json](./peer-snapshot.schema.json)
 When you cannot download real snapshots (air-gapped build, rate limits, etc.), create
 minimal valid JSON files so the crate still builds. Empty `bigLedgerPools` is fine:
 the binary simply starts without embedded big-ledger peers (you can still pass
-`--peer-snapshot` at runtime).
+`--peers-snapshot` at runtime).
 
 Example for **preprod** (`NetworkMagic` is `1`):
 
@@ -91,13 +91,12 @@ for another reason (clean build, staged-file change, build-script source change,
 GitHub Actions that compile Amaru use the composite action
 [`.github/actions/stage-peer-snapshots`](../../../../.github/actions/stage-peer-snapshots)
 (wrapping [`scripts/stage-peer-snapshots`](../../../../scripts/stage-peer-snapshots)):
-authenticated curl fetch first, then cargo with `AMARU_SKIP_PEER_SNAPSHOT_FETCH=1`
+Git fetch first, then cargo with `AMARU_SKIP_PEER_SNAPSHOT_FETCH=1`
 and blank `GITHUB_TOKEN` / `GH_TOKEN` so build scripts never see credentials.
 
 You can run the same script locally:
 
 ```bash
-# optional: export GITHUB_TOKEN=…
 ./scripts/stage-peer-snapshots
 AMARU_SKIP_PEER_SNAPSHOT_FETCH=1 cargo build -p amaru-node
 ```
